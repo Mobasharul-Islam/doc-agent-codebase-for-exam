@@ -1,0 +1,8 @@
+class Calculator(Tool):
+    name = "calculator"
+    def __call__(self, expr: str) -> ToolResult:
+        """Arithmetic only, via a whitelisted AST walk (never eval())."""
+        try:
+            return ToolResult(ok=True, payload={"expr": expr, "value": _eval(ast.parse(expr, mode="eval"))})
+        except (ValueError, SyntaxError, ZeroDivisionError) as e:
+            return ToolResult(ok=False, payload={"error": str(e)})

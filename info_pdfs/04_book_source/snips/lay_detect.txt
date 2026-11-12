@@ -1,0 +1,18 @@
+def detect(pages: list[Page], cfg: dict) -> list[Region]:
+    """Classical layout analysis (cfg['layout']['backend']='classical'). Reading order =
+    top-to-bottom, left-to-right (single column). kind: 'heading' if the line is much taller than
+    the median, 'figure' if it is a very tall block, else 'text'. A detectron2 backend would plug in
+    here."""
+    regions: list[Region] = []
+    for p in pages:
+        PAGE_META[p.id] = (p.image_path, p.doc_id)
+        gray = read_gray(p.image_path)
+        boxes = sorted(_lines(gray), key=lambda b: (b[1] // 8, b[0]))
+        if not boxes:
+            continue
+        med = float(np.median([b[3] - b[1] for b in boxes]))
+        for x0, y0, x1, y1 in boxes:
+            bh = y1 - y0
+            kind = "figure" if bh > 0.2 * gray.shape[0] else "heading" if bh > 1.4 * med else "text"
+            regions.append(Region(page_id=p.id, bbox=(x0, y0, x1, y1), kind=kind))
+    return regions

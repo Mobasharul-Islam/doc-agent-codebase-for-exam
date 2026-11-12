@@ -1,14 +1,46 @@
 """Stage 5 — dense retrieval"""
 from __future__ import annotations
+
 from ..contracts import *  # noqa
+
 
 class Retriever:
     def __init__(self, cfg: dict) -> None:
         self.cfg = cfg["retrieve"]
+        self.full_cfg = cfg
+        self._index = None
+        self._chunks: list[Chunk] = []
+
+    def _ensure(self) -> None:
+        if self._index is None:
+            from ..index import store
+
+            self._index, self._chunks = store.load(self.full_cfg)
+
+    @property
+    def chunks(self) -> list[Chunk]:
+        self._ensure()
+        return self._chunks
+
     def retrieve(self, query: str, k: int | None = None) -> list[Chunk]:
-        """Top-k dense retrieval. Set chunk.score (relevance) on every result so decide() can judge
-        whether the evidence is weak. IMPLEMENT."""
-        raise NotImplementedError("Stage 5: retrieve")
+        """Top-k dense retrieval. Embeds the query, searches the index, and sets chunk.score to the
+        cosine similarity (relevance) on every result so decide() can judge whether the evidence is
+        weak. The cross-encoder rerank (if enabled) only REORDERS; scores stay cosine so that
+        weak_threshold keeps a stable meaning."""
+        from ..index import embed
+        from . import rerank
+
+        self._ensure()
+        assert self._index is not None
+        k = min(k or self.cfg["k"], len(self._chunks))
+        q = embed.encode_texts([query], self.full_cfg)
+        scores, ids = self._index.search(q, k)
+        out = []
+        for s, i in zip(scores[0], ids[0]):
+            if i < 0:
+                continue
+            out.append(self._chunks[i].model_copy(update={"score": float(s)}))
+        return rerank.rerank(query, out, self.full_cfg)
 
 
 # --- evidence-strength policy: read by agent.decide() for evidence-gated re-search ---
@@ -16,12 +48,13 @@ def top_score(chunks: list[Chunk]) -> float:
     """Strength of the current evidence = best chunk score (0.0 if empty)."""
     return max((c.score for c in chunks), default=0.0)
 
+
 def is_weak(chunks: list[Chunk], cfg: dict) -> bool:
     """Weak evidence = best score below cfg.retrieve.weak_threshold."""
     return top_score(chunks) < cfg["retrieve"]["weak_threshold"]
+
 
 def next_k(k: int, cfg: dict) -> int | None:
     """Widen the net: k + k_step, or None once it would exceed k_max (signal to ABSTAIN)."""
     nk = k + cfg["retrieve"]["k_step"]
     return nk if nk <= cfg["retrieve"]["k_max"] else None
-

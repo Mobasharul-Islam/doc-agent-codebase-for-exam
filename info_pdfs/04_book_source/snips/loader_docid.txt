@@ -1,0 +1,6 @@
+def _doc_id(path: Path, raw_dir: Path) -> str:
+    """Sub-folder name if the page sits in one, else the file stem minus a trailing page number."""
+    rel = path.relative_to(raw_dir)
+    if len(rel.parts) > 1:
+        return rel.parts[0]
+    return re.sub(r"[_\-\s]*p?\d+$", "", path.stem) or path.stem

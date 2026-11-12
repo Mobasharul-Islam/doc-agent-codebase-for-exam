@@ -1,0 +1,26 @@
+def run(pages: list[Page], cfg: dict) -> list[Page]:
+    """Deskew -> median denoise -> CLAHE contrast normalisation. Writes to data/interim/preprocessed.
+    Output stays grayscale (not binarised): OCR models and the enhancer both prefer gray; binarisation
+    happens privately inside layout detection. Per-page quality stats go to page_meta.json."""
+    paths = data_paths(cfg)
+    out_dir = paths["interim_dir"] / "preprocessed"
+    meta: dict[str, dict] = {}
+    out: list[Page] = []
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    for p in pages:
+        gray = read_gray(p.image_path)
+        skew = estimate_skew(gray)
+        h, w = gray.shape
+        if abs(skew) > 0.2:
+            m = cv2.getRotationMatrix2D((w / 2, h / 2), skew, 1.0)
+            gray = cv2.warpAffine(
+                gray, m, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+            )
+        meta[p.id] = {**quality_stats(gray, skew), "doc_id": p.doc_id}
+        gray = clahe.apply(cv2.medianBlur(gray, 3))
+        dst = out_dir / f"{p.id}.png"
+        write_image(dst, gray)
+        out.append(Page(id=p.id, image_path=str(dst), doc_id=p.doc_id))
+    paths["interim_dir"].mkdir(parents=True, exist_ok=True)
+    (paths["interim_dir"] / "page_meta.json").write_text(json.dumps(meta, indent=1))
+    return out

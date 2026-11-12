@@ -1,0 +1,13 @@
+def _eval(node):
+    if isinstance(node, ast.Expression):
+        return _eval(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
+        a, b = _eval(node.left), _eval(node.right)
+        if isinstance(node.op, ast.Pow) and abs(b) > 100:
+            raise ValueError("exponent too large")
+        return _OPS[type(node.op)](a, b)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return -_eval(node.operand) if isinstance(node.op, ast.USub) else _eval(node.operand)
+    raise ValueError("unsupported expression")

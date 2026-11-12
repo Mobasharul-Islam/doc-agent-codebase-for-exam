@@ -1,13 +1,34 @@
 """Training — Lightning modules per trainable component"""
 from __future__ import annotations
+
 from ..contracts import *  # noqa
 
 import lightning as L
+import torch
+
 
 class LitComponent(L.LightningModule):
-    """Wrap enhancer / OCR / retriever training. IMPLEMENT training_step + configure_optimizers."""
-    def training_step(self, batch, idx):
-        raise NotImplementedError("Training: training_step")
-    def configure_optimizers(self):
-        raise NotImplementedError("Training: optimizer + LR schedule (from cfg)")
+    """Wrap enhancer / OCR / retriever training. Implemented: component='enhancer' (denoiser,
+    L1 loss). OCR fine-tuning and retriever contrastive training are not implemented (they need
+    labelled data + a large model; see adapt.apply_lora for the cheap-adaptation hook)."""
+    def __init__(self, component: str = "enhancer", cfg: dict | None = None) -> None:
+        super().__init__()
+        if component != "enhancer":
+            raise NotImplementedError(f"training for '{component}' is not implemented; use 'enhancer'")
+        from ..ingest.enhance import DenoiseNet
 
+        self.component = component
+        self.cfg = (cfg or {}).get("train", {})
+        self.net = DenoiseNet()
+    def training_step(self, batch, idx):
+        noisy, clean = batch
+        loss = torch.nn.functional.l1_loss(self.net(noisy), clean)
+        self.log("train_l1", loss, prog_bar=True)
+        return loss
+    def validation_step(self, batch, idx):
+        noisy, clean = batch
+        self.log("val_l1", torch.nn.functional.l1_loss(self.net(noisy), clean), prog_bar=True)
+    def configure_optimizers(self):
+        opt = torch.optim.Adam(self.parameters(), lr=self.cfg.get("lr", 1e-3))
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(self.cfg.get("epochs", 3), 1))
+        return {"optimizer": opt, "lr_scheduler": sched}

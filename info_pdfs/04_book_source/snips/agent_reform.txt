@@ -1,0 +1,8 @@
+def _reformulate(self, query: str, attempt: int) -> str:
+    """New wording for a re-search: LLM rewrite if a key is configured, else keyword query."""
+    if self.llm.online:
+        new = self.llm.complete(prompts.DECIDE.format(question=query), max_tokens=40).strip()
+        if new:
+            return new
+    words = content_words(query)
+    return " ".join(words) if words and " ".join(words) != query else query

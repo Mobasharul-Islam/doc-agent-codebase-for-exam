@@ -1,0 +1,100 @@
+\chapter{Phase A, Part 1: Ingestion, Vision and Privacy (Stages 1--3)}
+\section{Stage 1a: loading pages (\c{ingest/loader.py})}
+\snip{loader_load}
+\snip{loader_docid}
+\textbf{What it does.} Walks \c{data/raw/} recursively (sorted $\Rightarrow$ deterministic order), builds a \c{Page} for each image, validates the list, records a corpus version, and logs a summary.
+\begin{itemize}
+ \item \textbf{Page id}: the path relative to \c{raw\_dir}, without extension, with path parts joined by \c{\_}: \c{raw/almanac\_1431\_p1.png} $\to$ \c{almanac\_1431\_p1}.
+ \item \textbf{doc\_id}: if the file sits in a sub-folder, the folder name; otherwise the file stem with a trailing page number removed by a regex (optional separators, optional letter \c{p}, then digits, at the end of the name): \c{almanac\_1431\_p1} $\to$ \c{almanac\_1431}.
+\end{itemize}
+\begin{why}
+\c{doc\_id} is essential: splits must be \emph{by document} (below), chunks never mix documents, and citations name a document.
+\end{why}
+\begin{gotcha}
+Hand-check the regex: \c{tide\_tables\_p2} $\to$ \c{tide\_tables} but \c{almanac\_1431} (no \c{\_p}) $\to$ \c{almanac} because the trailing \c{1431} looks like a page number! Name files \c{almanac\_1431\_p1} (with the \c{p}) to avoid that.
+\end{gotcha}
+
+\section{Data validation and versioning}
+\snip{val_validate}
+\snip{val_split}
+\snip{val_leak}
+\snip{val_floors}
+\begin{itemize}
+ \item \c{validate} raises \c{AssertionError} for: no pages, duplicate ids, unsupported extension, missing/empty file, missing \c{doc\_id}.
+ \item \c{split\_by\_doc}: shuffles \emph{documents} (seeded) and assigns 80/10/10 to train/val/test; then \c{assert\_no\_leakage} proves no document appears in two splits. With fewer than 3 documents, val and test are empty.
+ \item \c{check\_floors}: compares page and word counts to \c{task.yaml} (300 pages, 60\,000 words) and \emph{reports}, does not raise (the word count is only known after OCR).
+\end{itemize}
+\begin{why}
+\textbf{Leakage.} If pages of one book are in both train and test, the model has seen near-identical layout, vocabulary and fonts: test accuracy is inflated. Splitting by \emph{document} makes the test honest.
+\end{why}
+\snip{versioning}
+\c{snapshot} hashes every file's relative path \emph{and bytes} (SHA-256) into a 12-hex-digit \emph{corpus version} and appends it to \c{data/versions.jsonl} if new. Same files $\Rightarrow$ same id; change one byte $\Rightarrow$ different id. This ties every result to the exact corpus that produced it (reproducibility).
+
+\section{Stage 1b: preprocessing (\c{ingest/preprocess.py})}
+\snip{pre_skew}
+\textbf{Skew estimation.} Otsu thresholding makes an ink mask; \c{cv2.minAreaRect} fits the smallest rotated rectangle around all ink pixels; its angle is the page tilt. OpenCV reports angles in $(0,90]$, so \c{angle - 90 if angle > 45} folds it to $[-45,45]$; the sign is flipped to give the \emph{correcting} rotation; angles beyond $\pm15^\circ$ are rejected as implausible and treated as $0$.
+\snip{pre_quality}
+Quality statistics: \emph{blur} is the variance of the Laplacian (a sharp image has strong edges $\Rightarrow$ high variance; a blurry one low); \emph{contrast} the pixel standard deviation; the \emph{bucket} is \c{poor} below 100, \c{medium} below 1000, else \c{good}.
+\snip{pre_run}
+\textbf{Steps per page}: read gray $\to$ estimate skew $\to$ rotate if $>0.2^\circ$ (border replicate, cubic) $\to$ record quality stats \emph{before} cleaning $\to$ median blur $3\times3$ (removes salt-and-pepper) $\to$ CLAHE (contrast-limited adaptive histogram equalisation, local contrast boost) $\to$ write PNG to \c{data/interim/preprocessed/} $\to$ return a \emph{new} \c{Page} pointing at the cleaned file.
+\begin{why}
+It stays grayscale rather than binarised because OCR networks and the denoiser both work better on gray. Quality stats are saved to \c{page\_meta.json} for later: \textbf{fairness} (accuracy per quality bucket), \textbf{drift monitoring}, and \textbf{robustness}.
+\end{why}
+
+\section{Stage 1c: enhancement (\c{ingest/enhance.py})}
+\snip{enh_net}
+\textbf{Architecture} (``unet\_small''): a 1-channel image passes through conv$\to$ReLU (\c{enc1}), a stride-2 conv (\c{enc2}, downsample), a conv (\c{mid}), a transposed conv (\c{up}, upsample), then concatenation with the \c{enc1} features (the \emph{skip connection} that preserves fine detail), and a decoder that outputs a \emph{residual} $d$. The final image is $\operatorname{clamp}(x + d,0,1)$: the network learns the \emph{correction}, which is easier than reconstructing the image.
+\snip{enh_degrade}
+\snip{enh_train}
+\textbf{Training = denoising.} Clean patches are cut from the corpus; \c{degrade} synthesises damage (blur with probability 0.6, Gaussian noise with $\sigma\in[0.02,0.12]$, salt \& pepper); the net maps damaged$\to$clean with an $L_1$ loss
+\[ \mathcal{L}=\frac1N\sum_i \left|\,f_\theta(\tilde x_i)-x_i\right| \]
+trained with Adam.
+\snip{enh_img}
+\textbf{Inference}: if a checkpoint (\c{models/enhancer.pt}) exists it is loaded and run on the whole page (padded so height/width are multiples of 4, because of the stride-2/upsample pair); \emph{otherwise} a classical fallback runs: non-local-means denoising followed by an unsharp mask ($1.5\,\text{den}-0.5\,\text{blur}$).
+\snip{enh_run}
+\begin{gotcha}
+The config says \c{type: diffusion}, but this is a \emph{one-step denoiser}, the single-step special case. A true diffusion model would iterate many denoising steps from noise. Be precise in an exam: say ``one-step residual denoising autoencoder; diffusion-style objective, not a multi-step sampler''.
+\end{gotcha}
+\begin{tryit}
+Why does \c{run} not train automatically? Because training is expensive and is a separate, explicit action (\c{training.train.main("enhancer", cfg)}); the pipeline only \emph{applies} what exists.
+\end{tryit}
+
+\section{Stage 2: layout detection (\c{vision/layout.py})}
+\snip{lay_lines}
+\snip{lay_detect}
+\textbf{Algorithm (classical morphology).} (1) Otsu-binarise with inversion so ink is white. (2) Build a horizontal rectangular kernel of width $\max(15,\lfloor w/25\rfloor)$ (32 px for an 800-px page) and height 3; \emph{dilate}. Dilation smears neighbouring letters/words into one blob per \emph{line}. (3) Find external contours; take bounding boxes; keep those at least $6$ px tall, $12$ px wide, with more than 2\% ink. (4) Sort by $(\lfloor y/8\rfloor, x)$, which gives top-to-bottom then left-to-right order (rounding $y$ tolerates a few pixels of jitter within one line). (5) Label: \c{figure} if taller than 20\% of the page, \c{heading} if taller than $1.4\times$ the median line height, else \c{text}.
+
+\c{PAGE\_META} (a module-level dictionary page\_id$\to$(image\_path, doc\_id)) is filled here because a \c{Region} carries only the page id, and OCR needs the image path and document id.
+\begin{why}
+OCR models read \emph{lines}. Cutting a whole page into one string would lose reading order and make citations imprecise. The \c{backend} key marks where a learned detector (detectron2) could replace this.
+\end{why}
+\begin{gotcha}
+Kernel too wide $\Rightarrow$ adjacent lines merge into one region; too narrow $\Rightarrow$ one line splits into word fragments. Heavy noise creates ink everywhere, which merges regions: the robustness test shows line retention collapsing (about $0.18$) at moderate noise.
+\end{gotcha}
+
+\section{Stage 3: OCR (\c{vision/ocr.py})}
+\snip{ocr_reader}
+\snip{ocr_transcribe}
+\textbf{Backends.} \c{backend: auto} checks for a ground-truth text file \c{raw\_dir/<page\_id>.txt}; if present its non-empty lines are used as the transcription (an \emph{oracle}, handy for demos and for isolating downstream errors). If absent, TrOCR (\c{microsoft/trocr-base-printed}) transcribes each cropped region: \c{processor(images) $\to$ pixel\_values $\to$ model.generate $\to$ batch\_decode}. The model is cached in a module global because loading takes seconds.
+
+\textbf{\c{transcribe}}: groups the region list by page (\c{itertools.groupby} relies on regions being contiguous per page, which layout guarantees). Three cases: (a) sidecar with the \emph{same number of lines} as regions $\to$ one chunk per region; (b) sidecar with a \emph{different} count (layout split/merged lines) $\to$ the whole page text as one chunk, since pairing lines to boxes would be wrong; (c) no sidecar $\to$ TrOCR per region. Chunk ids are \c{<page\_id>\_r<i>}.
+\begin{gotcha}
+\c{backend="trocr"} makes \c{sidecar\_lines} return \c{None} even if a \c{.txt} exists, so you can measure the \emph{real} OCR on your demo. The fairness and robustness code only computes OCR-vs-clean F1 when the backend is \c{trocr}, since a sidecar ignores the image entirely.
+\end{gotcha}
+
+\section{Governance: PII detection and redaction (\c{governance/pii.py})}
+\snip{pii}
+\textbf{\c{detect}}: runs the regexes in the order \c{EMAIL, SSN, CARD, ID, PHONE}. A new match is kept only if it does \emph{not overlap} an already-accepted span, so earlier (more specific) patterns win; spans are returned sorted. \textbf{\c{redact}}: rebuilds the string, replacing each span by \c{[TYPE]}.
+
+Worked example (computed by the code):
+\begin{lstlisting}[style=plain]
+text   : Mail a.b@x.org or call 555-123-4567, SSN 123-45-6789, year 1429 1430.
+detect : [(5,14,'EMAIL'), (23,35,'PHONE'), (41,52,'SSN')]
+redact : Mail [EMAIL] or call [PHONE], SSN [SSN], year 1429 1430.
+\end{lstlisting}
+Note that \emph{``1429 1430''} is untouched: the phone pattern deliberately requires hyphens (or a Bangladeshi mobile format) so that years and page numbers in almanacs are not destroyed.
+
+\textbf{\c{register}} subscribes one handler, \c{\_scrub}, to three seams and it handles whatever the seam provides: \c{ctx["chunks"]} (Chunk objects: redact \c{text} in place), \c{ctx["state"]} (each observation's payload, recursively), \c{ctx["answer"]}, and \c{ctx["record"]/["text"]} (log records).
+\begin{why}
+Redact \emph{before indexing} (\c{after\_ocr}): data that never enters the index can never be retrieved or leaked. The price is a deliberate loss of capability: the system \emph{cannot} answer ``what is the secretary's phone?''. Be ready to discuss this privacy-vs-utility trade-off.
+\end{why}

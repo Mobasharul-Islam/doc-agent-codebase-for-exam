@@ -1,0 +1,2 @@
+def bind(retriever, cfg: dict) -> None:
+    _CTX["retriever"], _CTX["cfg"] = retriever, cfg

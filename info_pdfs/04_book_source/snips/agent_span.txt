@@ -1,0 +1,13 @@
+@staticmethod
+def _span(chunk_text: str, answer: str) -> tuple[int, int]:
+    """Character span of the chunk sentence that best overlaps the answer."""
+    aw = set(content_words(re.sub(r"\[[^\]]+\]", "", answer)))
+    best, span = -1.0, (0, len(chunk_text))
+    for m in re.finditer(r"[^.!?]+[.!?]?", chunk_text):
+        s = m.group().strip()
+        if not s:
+            continue
+        ov = len(aw & set(content_words(s))) / (len(aw) or 1)
+        if ov > best:
+            best, span = ov, (m.start() + len(m.group()) - len(m.group().lstrip()), m.end())
+    return span

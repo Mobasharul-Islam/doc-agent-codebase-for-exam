@@ -1,0 +1,14 @@
+class Extract(Tool):
+    name = "extract"
+    def __call__(self, field: str, chunk_id: str) -> ToolResult:
+        """Pull a value out of a chunk: 'field: value' / 'field is value', or a typed pattern when
+        field is one of date | number | year | time."""
+        c = _chunk(chunk_id)
+        if c is None:
+            return ToolResult(ok=False, payload={"error": f"unknown chunk {chunk_id}"})
+        if field in _PATTERNS:
+            vals = re.findall(_PATTERNS[field], c.text)
+        else:
+            vals = [m.strip() for m in re.findall(
+                rf"{re.escape(field)}\s*(?:[:=\-]|is|was|at)\s*([^.;,\n]+)", c.text, re.I)]
+        return ToolResult(ok=bool(vals), payload={"field": field, "values": vals, "chunk_id": chunk_id})

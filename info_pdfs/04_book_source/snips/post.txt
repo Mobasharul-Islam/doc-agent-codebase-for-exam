@@ -1,0 +1,52 @@
+"""LLM -- answer post-process / format / abstention"""
+from __future__ import annotations
+
+import re
+
+from ..contracts import *  # noqa
+from .client import content_words
+from .prompts import ABSTAIN_TOKEN
+
+ABSTAIN_TEXT = "Insufficient evidence in the documents to answer this question."
+MIN_SUPPORT = 0.3  # min fraction of answer content-words found in the cited evidence
+
+
+def abstain_answer() -> Answer:
+    return Answer(text=ABSTAIN_TEXT, citations=[], grounded=False, confidence=0.0)
+
+
+def support_score(answer_text: str, evidence_texts: list[str]) -> float:
+    """Lexical support: share of the answer's content words that occur in the cited evidence."""
+    words = set(content_words(answer_text))
+    if not words:
+        return 0.0
+    ev = set(content_words(" ".join(evidence_texts)))
+    return len(words & ev) / len(words)
+
+
+def format_answer(raw: str, citations: list) -> Answer:
+    """Attach citations, set grounded/confidence, enforce abstention.
+    Abstains when the model said so, or produced no usable citation (an uncited answer cannot be
+    verified, so it is treated as unsupported). Citations may be Citation objects or dicts.
+    Confidence here is a coarse default; the Agent overwrites it with an evidence-based value."""
+    cites = [c if isinstance(c, Citation) else Citation(**c) for c in citations]
+    text = re.sub(r"\s*\[[^\]]+\]", "", raw).strip()
+    if ABSTAIN_TOKEN in raw or not text or not cites:
+        return abstain_answer()
+    return Answer(text=text, citations=cites, grounded=True, confidence=min(0.9, 0.5 + 0.1 * len(cites)))
+
+
+def register(hooks) -> None:
+    """Grounding / abstention gate at BEFORE_ANSWER: if there is no retrieval evidence, or the best
+    evidence is below the weak threshold, mark state['abstain'] so synthesize() will not fabricate.
+    Mutates ctx['state'] in place (the agent loop reads it afterwards)."""
+    def _ground(ctx: dict) -> dict:
+        state = ctx.get("state")
+        if state is None:
+            return ctx
+        retrievals = [o for o in state.get("obs", []) if "top_score" in getattr(o, "payload", {})]
+        # the Retrieve tool stamps payload['weak'] using retriever.is_weak (cfg weak_threshold)
+        if not retrievals or all(o.payload.get("weak", True) for o in retrievals):
+            state["abstain"] = True
+        return ctx
+    hooks.register(hooks.BEFORE_ANSWER, _ground)

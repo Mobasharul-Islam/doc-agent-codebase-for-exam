@@ -1,0 +1,31 @@
+"""Stage 4 -- embed chunks"""
+from __future__ import annotations
+
+import numpy as np
+
+from ..contracts import *  # noqa
+
+_MODELS: dict = {}
+
+
+def get_model(name: str):
+    """Cached SentenceTransformer (loading takes seconds, so do it once per process)."""
+    if name not in _MODELS:
+        from sentence_transformers import SentenceTransformer
+
+        _MODELS[name] = SentenceTransformer(name)
+    return _MODELS[name]
+
+
+def encode_texts(texts: list[str], cfg: dict) -> np.ndarray:
+    """L2-normalised float32 embeddings, so inner product == cosine similarity."""
+    model = get_model(cfg["embed"]["model"])
+    vecs = model.encode(
+        texts, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True
+    )
+    return np.asarray(vecs, dtype=np.float32)
+
+
+def encode(chunks: list[Chunk], cfg: dict):
+    """Embed with cfg['embed']['model'] -> array of shape (n_chunks, dim)."""
+    return encode_texts([c.text for c in chunks], cfg)

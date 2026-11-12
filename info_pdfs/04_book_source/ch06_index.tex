@@ -1,0 +1,42 @@
+\chapter{Phase A, Part 2: Chunk, Embed, Index (Stage 4)}
+\section{Chunking (\c{index/chunk.py})}
+\snip{chunk}
+\textbf{Algorithm.} (1) For every input line-chunk (in reading order) append its words to a per-document list of \c{(word, page\_id)} pairs. (2) For each document slide a window of \c{size} words with stride $s=\text{size}-\text{overlap}$. (3) Each window becomes a \c{Chunk} whose \c{page\_ids} are the distinct pages of its words, in order. (4) Stop when a window reaches the end of the document (\c{start + size >= len(words)}), so the last window is not duplicated.
+
+\begin{keyidea}
+Number of chunks for a document of $n$ words, window $W$, overlap $O$, stride $s=W-O$:
+\[ N = \begin{cases}1 & n\le W\\ 1+\left\lceil \dfrac{n-W}{s}\right\rceil & n>W\end{cases}\]
+\end{keyidea}
+\textbf{Worked example (verified by running the code).} $n=100$, $W=48$, $O=8\Rightarrow s=40$. Windows start at $0,40,80$: words $[0,47]$, $[40,87]$, $[80,99]$. Formula: $1+\lceil (100-48)/40\rceil=1+\lceil1.3\rceil=3$ \checkmark. The last chunk has only 20 words.
+
+\begin{why}
+\emph{Why overlap?} A fact that straddles a boundary would be cut in half and match neither chunk well. Overlapping by 8 words means each boundary sentence also appears whole in a neighbour. \emph{Why chunk at all?} Whole documents are too coarse (one vector for 20 pages is a blur); single lines are too small to carry a fact. \emph{Trade-off}: smaller chunks $\Rightarrow$ more precise retrieval but more vectors and less context per chunk.
+\end{why}
+\begin{gotcha}
+Chunk ids are \c{<doc\_id>\_c<NNNN>} \emph{after} re-chunking, so they differ from the OCR ids (\c{\_r<i>}). Citations always refer to the \emph{indexed} (window) chunk ids. Also: \c{assert 0 <= overlap < size} protects against an infinite loop ($s\le0$).
+\end{gotcha}
+
+\section{Embeddings (\c{index/embed.py})}
+\snip{embed}
+\c{get\_model} caches a \c{SentenceTransformer} per model name. \c{encode\_texts} returns an array of shape $(n,384)$ of \emph{L2-normalised} \c{float32} vectors (\c{normalize\_embeddings=True}). \c{encode(chunks)} just maps chunk texts through it.
+
+\begin{keyidea}
+For unit vectors $\|a\|=\|b\|=1$: $\cos(a,b)=a\cdot b$. So faiss \emph{inner product} search returns \emph{cosine similarity} directly, a number in $[-1,1]$ (in practice $0.1$ to $0.8$ here) that the agent compares with \c{weak\_threshold}.
+\end{keyidea}
+\begin{why}
+Embedding the question and the chunks with the \emph{same} model maps both into one space where ``close'' means ``similar meaning'', which finds matches even with different wording (``when does year 1431 start'' vs ``begins on the fourteenth of April''). Normalising makes scores comparable across chunks and makes the threshold meaningful.
+\end{why}
+
+\section{Vector store (\c{index/store.py})}
+\snip{store}
+\begin{itemize}
+ \item \c{\_new\_index}: \c{faiss:flat} $\to$ \c{IndexFlatIP} (exact brute-force inner product, $O(nd)$ per query); \c{faiss:hnsw} $\to$ \c{IndexHNSWFlat(dim,32,inner product)} (approximate graph search, sub-linear, scales to millions).
+ \item \c{build}: adds vectors, writes \c{index.faiss}, and writes \c{chunks.jsonl} (one JSON \c{Chunk} per line). \textbf{Row $i$ of the index corresponds to line $i$ of \c{chunks.jsonl}}; that is the only link between vectors and text.
+ \item \c{load}: reads both; raises \c{FileNotFoundError} with a helpful message if the index is missing (the API turns this into HTTP 503).
+\end{itemize}
+\begin{gotcha}
+Why \c{faiss:flat} in the config? \c{faiss-cpu 1.8} \emph{segfaults} on HNSW \c{add} on this Windows machine (reproduced in a bare script, no project code). Flat is exact and plenty fast for a small corpus. HNSW trades \emph{exactness} for \emph{speed}: it may miss the true nearest neighbour, so recall can drop slightly.
+\end{gotcha}
+\begin{tip}
+Be able to compare: Flat $O(n)$ exact; HNSW $\approx O(\log n)$ approximate with parameters $M$ (links per node, 32 here) and \c{efSearch}. For 300 pages $\approx$ a few thousand chunks, flat search takes microseconds; HNSW only pays off for very large corpora (the 100k-page profile).
+\end{tip}

@@ -1,0 +1,10 @@
+def degrade(clean: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Synthetic scan damage (float [0,1] array): blur + gaussian noise + salt/pepper speckle."""
+    x = clean.copy()
+    if rng.random() < 0.6:
+        x = cv2.GaussianBlur(x, (0, 0), float(rng.uniform(0.5, 1.5)))
+    x = x + rng.normal(0, rng.uniform(0.02, 0.12), x.shape).astype(np.float32)
+    mask = rng.random(x.shape)
+    x[mask < 0.005] = 0.0
+    x[mask > 0.995] = 1.0
+    return np.clip(x, 0, 1).astype(np.float32)

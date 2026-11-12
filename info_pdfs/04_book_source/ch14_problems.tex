@@ -1,0 +1,224 @@
+\chapter{Exam-Style Problems with Worked Solutions}\label{ch:problems}
+Attempt each problem on paper first. All numeric answers were \emph{checked by running the code}. Problems are grouped: A (concepts), B (hand computation), C (modify the code), D (debugging), E (design / essay).
+
+\section*{Part A: Concepts}
+\begin{problem}[Seams]
+List the nine hook seams. Which three have no handler in the default wiring, and what are they for?
+\end{problem}
+\begin{solution}
+\c{after\_ingest}, \c{after\_ocr}, \c{before\_index}, \c{after\_retrieve}, \c{on\_step}, \c{on\_tool\_call}, \c{before\_answer}, \c{after\_answer}, \c{on\_log}. No default subscribers: \c{after\_ingest}, \c{before\_index}, \c{after\_retrieve}: they are \emph{extension points} (e.g.\ page filtering, chunk de-duplication, result logging) that can be used without editing the pipeline.
+\end{solution}
+
+\begin{problem}[In-place mutation]
+A student writes a PII handler for \c{before\_answer} that does \c{return \{"state": cleaned\_copy\}}. Evidence still leaks to the LLM prompt. Why?
+\end{problem}
+\begin{solution}
+\c{Agent.run} calls \c{hooks.run(BEFORE\_ANSWER, \{"state": state\})} and ignores the return value; it continues with its own \c{state} object. A copy is never seen. The handler must mutate the original objects (\c{o.payload = ...} on the observations in \c{ctx["state"]["obs"]}).
+\end{solution}
+
+\begin{problem}[Pipeline vs agent]
+Explain, using the trace, the difference between the two questions ``tidal range of the Karnaphuli estuary'' and ``population of the Mars colony''. Why does the second prove the system is agentic?
+\end{problem}
+\begin{solution}
+First: one \c{retrieve} ($k{=}10$), top score $0.605\ge0.35$, \c{decide} returns \c{stop}, grounded cited answer. Second: top scores $0.168,0.12,0.12,0.12$ at $k=10,20,30,40$; each \c{decide} sees a weak score, widens and rewords; at $k=40$ \c{next\_k} is \c{None}, so \c{abstain=True}. The \emph{sequence of actions depends on observed numbers}: with a fixed retrieve$\to$answer path both questions would have identical traces.
+\end{solution}
+
+\begin{problem}[Why cosine = dot product]
+The index uses inner-product search, yet the report calls scores ``cosine similarities''. Justify.
+\end{problem}
+\begin{solution}
+\c{embed.encode\_texts} passes \c{normalize\_embeddings=True}, so every vector has $\|v\|=1$. Then $\cos(a,b)=\frac{a\cdot b}{\|a\|\|b\|}=a\cdot b$. If vectors were not normalised, inner product would also reward long vectors and the threshold $0.35$ would be meaningless.
+\end{solution}
+
+\begin{problem}[Locked things]
+Which of the following would fail CI? (a) change \c{weak\_threshold} to 0.5; (b) rename \c{Retriever.retrieve} to \c{search}; (c) add a tool \c{translate} to \c{REGISTRY}; (d) add a tenth seam \c{on\_error}; (e) write a new function inside \c{decide} bodies; (f) change a field type in \c{Chunk}.
+\end{problem}
+\begin{solution}
+(a) allowed (config). (b) \c{Agent.decide} would break at runtime and the structure rules forbid renaming; the tests exercising retrieval fail. (c) fails \c{test\_tool\_names\_locked} (exact set of nine names). (d) fails \c{test\_seams\_are\_locked}. (e) allowed (bodies marked IMPLEMENT may change). (f) forbidden: contracts are locked; \c{test\_contracts}/structure rules fail.
+\end{solution}
+
+\section*{Part B: Computation}
+\begin{problem}[Retrieval ladder]
+Config: $k=5$, \c{k\_step}$=5$, \c{k\_max}$=30$, \c{weak\_threshold}$=0.4$, \c{max\_steps}$=8$, \c{cost\_per\_call\_usd}$=0.001$. The best scores of successive retrievals are $0.10,0.20,0.20,0.30,0.45,\dots$. (i) What $k$ values are searched? (ii) How many retrievals? (iii) Does the guardrail interfere? (iv) Max possible retrievals?
+\end{problem}
+\begin{solution}
+(i) $5,10,15,20,25$: the fifth retrieval scores $0.45\ge0.4$, so \c{decide} returns \c{stop}. (ii) 5. (iii) steps $=5\le8$, cost $=0.005\le0.05$: no. (iv) $\lfloor(30-5)/5\rfloor+1=6$ ($k=5,\dots,30$); a 6th weak result would give \c{next\_k=None}, so abstain. Note: 6 retrievals still fit in \c{max\_steps}$=8$.
+\end{solution}
+
+\begin{problem}[Chunk count]
+A document has 300 words; window $=64$, overlap $=16$. How many chunks? Which words are in the last one?
+\end{problem}
+\begin{solution}
+$s=48$. $N=1+\lceil(300-64)/48\rceil=1+\lceil4.92\rceil=6$. Starts: $0,48,96,144,192,240$. At $240$: $240+64=304\ge300$, so it is the last window: words $240$--$299$ (60 words, shorter than 64).
+\end{solution}
+
+\begin{problem}[ECE]
+Confidences $[0.95,0.92,0.55,0.51]$, correctness $[1,1,0,1]$. Compute ECE with 10 bins.
+\end{problem}
+\begin{solution}
+Bins: $0.95,0.92\to$ bin 9; $0.55,0.51\to$ bin 5. Bin 9: $n=2$, acc $=1$, mean conf $=0.935$, gap $0.065$, weight $0.5\Rightarrow0.0325$. Bin 5: acc $=0.5$, mean conf $=0.53$, gap $0.03$, weight $0.5\Rightarrow0.015$. $\mathrm{ECE}=0.0475$ (checked).
+\end{solution}
+
+\begin{problem}[Confidence of an answer]
+Best retrieval score $0.52$; the answer's content words are 80\% found in the cited chunk. What confidence does \c{synthesize} assign? What if the support were $0.25$?
+\end{problem}
+\begin{solution}
+$0.5(0.52)+0.5(0.8)=0.66$. With support $0.25<0.3$ the answer is \emph{rejected} (abstention, confidence $0$); no confidence is computed.
+\end{solution}
+
+\begin{problem}[Budget guardrail]
+Set \c{cost\_per\_call\_usd=0.02}, \c{budget\_usd=0.05}, \c{max\_steps=8}. On which tool call does the guardrail raise for a question that would need four retrievals? What does the user get?
+\end{problem}
+\begin{solution}
+After each call \c{spent} is $0.02,0.04,0.06$. The check is \c{spent > 0.05}, so the \emph{third} call raises \c{PermissionError("cost budget exceeded")} (verified). The exception propagates out of \c{hooks.run} and out of \c{Agent.run}: the caller sees an exception, not an answer (callers such as an API should catch it). Only the retrievals at $k=10$ and $k=20$ completed.
+\end{solution}
+
+\begin{problem}[Hook call counts]
+For (a) the Karnaphuli question (one retrieval) and (b) the Mars question (four retrievals), count how many times each of \c{on\_step}, \c{on\_tool\_call}, \c{after\_retrieve}, \c{before\_answer}, \c{after\_answer} fires, and how many lines are written to \c{traces/run.jsonl}.
+\end{problem}
+\begin{solution}
+(a) Iteration 1: \c{on\_step}, decide $\to$ retrieve, \c{on\_tool\_call}, tool (\c{after\_retrieve}). Iteration 2: \c{on\_step}, decide $\to$ \c{stop} (no tool call). Then \c{before\_answer}, \c{after\_answer}. Counts: \c{on\_step}=2, \c{on\_tool\_call}=1, \c{after\_retrieve}=1, \c{before\_answer}=1, \c{after\_answer}=1. Trace lines (one per \c{on\_step}, \c{on\_tool\_call}, \c{after\_answer}) $=2+1+1=4$.\\
+(b) \c{on\_step}=5 (decisions after 0,1,2,3,4 observations), \c{on\_tool\_call}=4, \c{after\_retrieve}=4, \c{before\_answer}=1, \c{after\_answer}=1. Trace lines $=5+4+1=10$, matching the real trace.
+\end{solution}
+
+\begin{problem}[PII]
+What does \c{pii.redact} return for: \texttt{Write to admin@school.edu, call 555-867-5309 (office) or 01912345678. Year 2024 2025.}? Explain each decision.
+\end{problem}
+\begin{solution}
+\texttt{Write to [EMAIL], call [PHONE] (office) or [PHONE]. Year 2024 2025.} (checked). The email matches \c{EMAIL}; \c{555-867-5309} matches the hyphenated phone alternative; \c{01912345678} matches the Bangladeshi mobile form \c{01\textbackslash d\{3\}...\textbackslash d\{6\}}; \emph{2024 2025} are untouched because the phone patterns need hyphens or the mobile prefix, so years survive.
+\end{solution}
+
+\begin{problem}[Metrics]
+(i) OCR F1 for pred \emph{``tide range is 4.2 metres''} vs gold \emph{``tidal range 4.2 metres''}. (ii) Recall@2 and @4 for retrieved $[c3,c1,c9,c2,c7]$, gold $\{c1,c2,c5\}$. (iii) subgroup gap for good $[.9,.95]$, medium $[.8,.7]$, poor $[.4,.5]$.
+\end{problem}
+\begin{solution}
+(i) common tokens $\{\text{range},4.2,\text{metres}\}=3$; $|P|=5$, $|G|=4$; prec $0.6$, rec $0.75$, $F_1=\frac{2(0.6)(0.75)}{1.35}=0.667$. (ii) @2: top-2 $=\{c3,c1\}$, hit $c1$: $1/3$. @4: $\{c3,c1,c9,c2\}$, hits $c1,c2$: $2/3$. (iii) means $0.925,0.75,0.45$; gap $=0.925-0.45=0.475$.
+\end{solution}
+
+\begin{problem}[RL return]
+An episode: three re-searches ($-0.05$ each) then answering an unanswerable question ($-1$). With $\gamma=0.99$ compute $G_0,\dots,G_3$. What does this teach the policy?
+\end{problem}
+\begin{solution}
+$G_3=-1$; $G_2=-0.05+0.99(-1)=-1.04$; $G_1=-0.05+0.99(-1.04)=-1.0796$; $G_0=-0.05+0.99(-1.0796)=-1.1188$ (checked). All negative: the policy should learn to \emph{abstain early} when the score is low and the question looks unanswerable (abstain gives $+0.3$ immediately).
+\end{solution}
+
+\begin{problem}[LoRA]
+A layer has $d=1024$, $k=4096$. With $r=16$, how many trainable parameters versus full fine-tuning? What fraction?
+\end{problem}
+\begin{solution}
+Full: $dk=4{,}194{,}304$. LoRA: $r(d+k)=16\cdot5120=81{,}920$, i.e.\ $1.95\%$.
+\end{solution}
+
+\begin{problem}[Verifier]
+For each (task, answer) give \c{success\_check.check}: (1) gold ``4.2 metres'', answer grounded+cited ``\ldots tidal range of 4.2 metres during spring tides.''; (2) gold ``4.2 metres'', answer grounded, cited, ``about four metres''; (3) gold \c{""}, answer abstention; (4) gold \c{""}, answer grounded ``42''; (5) gold ``4.2 metres'', answer grounded but no citations.
+\end{problem}
+\begin{solution}
+(1) True (substring after normalisation). (2) False (gold string absent). (3) True (unanswerable requires abstention). (4) False (answering an unanswerable item). (5) False (verifiable items require citations).
+\end{solution}
+
+\section*{Part C: Modify the code}
+\begin{problem}[New PII type]
+Add detection and redaction of dates of birth written \c{dd/mm/yyyy}. Say where, and what trade-off you must discuss.
+\end{problem}
+\begin{solution}
+Edit only the body-level data in \c{governance/pii.py}:
+\begin{lstlisting}
+_PATTERNS["DOB"] = r"\b\d{2}/\d{2}/\d{4}\b"
+_ORDER = ["EMAIL", "SSN", "CARD", "ID", "DOB", "PHONE"]
+\end{lstlisting}
+Order matters: \c{detect} keeps the first non-overlapping match. Add a test such as \c{assert pii.redact("born 01/02/1990") == "born [DOB]"}. Trade-off: an almanac is \emph{full of dates} (\c{14/04/1431}), so this pattern would redact legitimate content and hurt recall; privacy vs utility. A better design restricts to contexts like ``born''/``DOB''.
+\end{solution}
+
+\begin{problem}[New tool]
+You want a \c{translate} tool. Can you add it to \c{REGISTRY}? What do you do instead?
+\end{problem}
+\begin{solution}
+No: \c{test\_tool\_names\_locked} requires exactly the nine locked names, and signatures are locked. Instead put the capability \emph{inside} an existing tool's body (e.g.\ extend \c{extract} to accept a language flag via its existing parameters) or implement a helper function used by \c{synthesize}. Choosing the allowed way is itself the exam point.
+\end{solution}
+
+\begin{problem}[Smarter reformulation]
+Change the re-search so that on the \emph{second} reformulation only the two longest keywords are used. Where, and what must not change?
+\end{problem}
+\begin{solution}
+Only the body of \c{Agent.\_reformulate} (a private helper) changes; \c{decide}'s logic and signatures are untouched:
+\begin{lstlisting}
+words = content_words(query)
+if attempt >= 2:                       # attempt == len(obs)
+    words = sorted(words, key=len, reverse=True)[:2]
+return " ".join(words) if words else query
+\end{lstlisting}
+\c{attempt=len(obs)}, so the first re-search has \c{attempt=1}, the second \c{attempt=2}. The return type stays \c{str}.
+\end{solution}
+
+\begin{problem}[New guardrail rule]
+Reject any tool argument string longer than 500 characters (to limit smuggled payloads). Write the change and a test.
+\end{problem}
+\begin{solution}
+In \c{Guardrails.check}, inside the loop over \c{\_strings(args)}:
+\begin{lstlisting}
+for s in _strings(action.get("args", {})):
+    if len(s) > 500:
+        raise PermissionError("argument too long")
+    if looks_like_injection(s):
+        raise PermissionError("possible prompt injection in tool arguments")
+\end{lstlisting}
+Test: assert that \c{check} raises \c{PermissionError} for an action whose query string is 501 characters long. No signature changes; \c{wiring} is untouched.
+\end{solution}
+
+\begin{problem}[New hook handler]
+Log how many chunks every retrieval returned, using a hook. Which files change?
+\end{problem}
+\begin{solution}
+Use the existing \c{after\_retrieve} seam. A feature module with \c{register(hooks)} subscribing \c{hooks.AFTER\_RETRIEVE} (read \c{len(ctx["chunks"])}), and \emph{one line} in \c{wiring.register\_all}. Pipeline, agent and \c{hooks.py} stay unchanged.
+\end{solution}
+
+\begin{problem}[Escalate on low confidence]
+When the final confidence is below $0.5$, queue a human review. Sketch it respecting the rules.
+\end{problem}
+\begin{solution}
+At the end of \c{synthesize} (a body you may edit) call \c{hitl.escalate("low confidence", \{"q": state["query"], "conf": ans.confidence\})} when \c{0 < ans.confidence < 0.5}. Use \c{from . import hitl}. Do not add a new tool; \c{escalate\_to\_human} already exists. Remember the escalation \emph{blocks the action} until \c{hitl\_store.decision(id)} is approved, so decide whether to return the answer anyway (marked pending) or withhold it.
+\end{solution}
+
+\section*{Part D: Debugging}
+\begin{problem}[Symptoms]
+Name the most likely cause and the file for each: (a) every question abstains though the index exists; (b) trace file has each line three times; (c) citation highlights point to the wrong characters; (d) the agent never re-searches even for nonsense questions; (e) the phone number appears in \c{traces/run.jsonl}; (f) the process dies silently during indexing with exit code 139.
+\end{problem}
+\begin{solution}
+(a) \c{weak\_threshold} too high, or the index was built with a different embedding model than queries use (scores low everywhere), or the grounding gate sees all retrievals weak: check scores in the trace. (b) \c{hooks.clear()} missing/removed in \c{register\_all}, so handlers accumulate. (c) \c{sanitize} no longer preserves length, so spans computed on sanitized text are off. (d) \c{weak\_threshold} is $0$ or \c{payload["weak"]} is wrongly always \c{False}; or \c{decide} returns \c{stop} unconditionally. (e) the tracer does not pass records through \c{ON\_LOG}, or \c{pii} is not registered on \c{on\_log}, or the PII handler returns a copy instead of editing. (f) segmentation fault in \c{faiss} HNSW \c{add} (exit 139); use \c{faiss:flat}.
+\end{solution}
+
+\begin{problem}[Read a failing assertion]
+\c{test\_trace\_covers\_every\_step} fails with \c{assert ks == sorted(ks) and len(set(ks)) == len(ks)}. What invariant broke, and what bug would produce it?
+\end{problem}
+\begin{solution}
+The retrieve $k$ values should be strictly increasing ($10,20,30,40$). Duplicates or non-monotone values mean \c{decide} reuses the old $k$ (e.g.\ passes \c{k} instead of \c{k2}) or \c{next\_k} is wrong.
+\end{solution}
+
+\section*{Part E: Design and essay}
+\begin{problem}[Ablation interpretation]
+All four ablation variants score 100\%. A student concludes ``reranking and re-search add nothing.'' Evaluate.
+\end{problem}
+\begin{solution}
+Invalid inference. The eval set (6 easy questions, 10 pages) is saturated: every variant answers all of them, so no difference \emph{can} appear (ceiling effect). Need a harder set (more documents, paraphrased questions, \c{needs\_research=true} trigger items) before drawing conclusions. Also check latency/abstain rate, which may differ.
+\end{solution}
+
+\begin{problem}[Threshold trade-off]
+Discuss lowering \c{weak\_threshold} from $0.35$ to $0.15$ on the demo corpus.
+\end{problem}
+\begin{solution}
+The unanswerable Mars question scored $0.168$ at $k=10$ and $0.095$--$0.168$ among hits: with $0.15$ some irrelevant chunk would pass as ``strong'', the agent would stop searching, and the LLM would be asked to answer from irrelevant text; the support check and abstain token are the remaining defences. Fewer re-searches (faster) but more hallucination risk. Raising it to $0.6$ would refuse correct but moderately scored answers (recall loss). A threshold is a point on the precision/recall trade-off inside the gap between relevant ($\approx0.5$--$0.6$) and irrelevant ($\approx0.1$--$0.27$) scores.
+\end{solution}
+
+\begin{problem}[Redesign]
+Propose how to make the agent genuinely multi-hop (``Add the tide height and the cooperative price, then convert to \dots'') using existing tools only.
+\end{problem}
+\begin{solution}
+Loop: \c{retrieve} sub-question 1 $\to$ \c{extract} the number from the best chunk $\to$ \c{retrieve} sub-question 2 $\to$ \c{extract} $\to$ \c{aggregate(op="sum")} or \c{calculator(expr)} $\to$ \c{cite} each source span. \c{decide} must keep a plan in \c{state} and decide the next tool from the last observation (extend the state machine beyond the single score test). Guardrails still bound steps and cost; the trace shows the tool sequence; the verifiable reward can be exact match of the final number.
+\end{solution}
+
+\begin{problem}[Scaling]
+The corpus grows to 100\,000 pages. List five concrete changes in this codebase.
+\end{problem}
+\begin{solution}
+(1) \c{index.type: faiss:hnsw} (once the segfault is solved) or IVF-PQ; (2) use \c{optional/stream\_ingest.stream} instead of \c{load\_pages}; (3) batch the embedding calls; (4) enable \c{optional/cache}; (5) quantise models with \c{adapt.quantize} and parallelise OCR per document; (6) keep latency SLO monitoring via \c{mlops/monitor}.
+\end{solution}

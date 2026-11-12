@@ -1,0 +1,4 @@
+class Tool(ABC):
+    name: str
+    @abstractmethod
+    def __call__(self, **kwargs) -> ToolResult: ...

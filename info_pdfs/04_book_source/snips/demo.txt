@@ -1,0 +1,9 @@
+def render(lines: list[str], rng: np.random.Generator) -> Image.Image:
+    img = Image.new("L", (800, 1000), 240)
+    d = ImageDraw.Draw(img)
+    f = font(26)
+    for i, ln in enumerate(lines):
+        d.text((50, 60 + i * 44), ln, fill=30, font=f)
+    img = img.rotate(float(rng.uniform(-1.2, 1.2)), fillcolor=240, resample=Image.BICUBIC)
+    a = np.asarray(img, dtype=np.float32) + rng.normal(0, 9, (1000, 800))
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))

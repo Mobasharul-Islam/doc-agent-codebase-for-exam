@@ -1,0 +1,5 @@
+def __init__(self, cfg: dict, retriever) -> None:
+    self.cfg = cfg["agent"]; self.retriever = retriever; self.mem = Memory()
+    self.full_cfg = cfg
+    self.llm = LLM(cfg)
+    tools.bind(retriever, cfg)    # tools get the retriever via module-level context

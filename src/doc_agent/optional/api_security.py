@@ -2,6 +2,41 @@
 Activate only if your data speciality or NFR requires it (profiles secure/high-stakes). Off by default; CI does not require impl."""
 from __future__ import annotations
 
-def require_auth(token: str) -> bool: raise NotImplementedError("optional: auth")
-def rate_limit(client: str) -> bool: raise NotImplementedError("optional: rate limit")
+import hashlib
+import hmac
+import time
 
+# Configure once at startup, e.g. api_security.configure({"s3cret-token"}); tokens are stored hashed.
+_TOKENS: set[str] = set()
+_BUCKETS: dict[str, tuple[float, float]] = {}   # client -> (tokens, last_ts)
+RATE, BURST = 1.0, 5.0                           # 1 request/sec sustained, bursts of 5
+
+
+def _h(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def configure(tokens: set[str], rate: float = 1.0, burst: float = 5.0) -> None:
+    global RATE, BURST
+    _TOKENS.clear()
+    _TOKENS.update(_h(t) for t in tokens)
+    RATE, BURST = rate, burst
+    _BUCKETS.clear()
+
+
+def require_auth(token: str) -> bool:
+    """Constant-time check of a bearer token against the configured set (deny if none configured)."""
+    h = _h(token or "")
+    return any(hmac.compare_digest(h, t) for t in _TOKENS)
+
+
+def rate_limit(client: str) -> bool:
+    """Token bucket per client. True = request allowed."""
+    now = time.monotonic()
+    tokens, last = _BUCKETS.get(client, (BURST, now))
+    tokens = min(BURST, tokens + (now - last) * RATE)
+    if tokens < 1:
+        _BUCKETS[client] = (tokens, now)
+        return False
+    _BUCKETS[client] = (tokens - 1, now)
+    return True

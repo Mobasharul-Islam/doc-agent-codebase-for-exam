@@ -1,0 +1,44 @@
+"""Stage 4 -- vector store"""
+from __future__ import annotations
+
+import json
+
+import faiss
+import numpy as np
+
+from ..contracts import *  # noqa
+from ..ingest.loader import data_paths
+
+
+def _new_index(kind: str, dim: int):
+    """cfg['index']['type']: 'faiss:hnsw' (approximate, graph) or 'faiss:flat' (exact)."""
+    if kind == "faiss:flat":
+        return faiss.IndexFlatIP(dim)
+    if kind == "faiss:hnsw":
+        return faiss.IndexHNSWFlat(dim, 32, faiss.METRIC_INNER_PRODUCT)
+    raise ValueError(f"unknown index type {kind}")
+
+
+def build(chunks, vectors, cfg: dict) -> None:
+    """Persist a vector index (cfg['index']['type']) + the chunk records next to it."""
+    vecs = np.ascontiguousarray(vectors, dtype=np.float32)
+    assert len(chunks) == len(vecs) > 0, "need one vector per chunk"
+    index = _new_index(cfg["index"]["type"], vecs.shape[1])
+    index.add(vecs)
+    out = data_paths(cfg)["index_dir"]
+    out.mkdir(parents=True, exist_ok=True)
+    faiss.write_index(index, str(out / "index.faiss"))
+    with (out / "chunks.jsonl").open("w", encoding="utf-8") as f:
+        for c in chunks:
+            f.write(c.model_dump_json() + "\n")
+
+
+def load(cfg: dict):
+    """Return (faiss_index, list[Chunk]); row i of the index <-> chunks[i]."""
+    d = data_paths(cfg)["index_dir"]
+    if not (d / "index.faiss").exists():
+        raise FileNotFoundError(f"no index in {d} - run `make ingest index` first")
+    index = faiss.read_index(str(d / "index.faiss"))
+    with (d / "chunks.jsonl").open(encoding="utf-8") as f:
+        chunks = [Chunk(**json.loads(line)) for line in f if line.strip()]
+    return index, chunks

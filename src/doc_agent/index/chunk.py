@@ -1,8 +1,38 @@
 """Stage 4 — chunk text"""
 from __future__ import annotations
+
 from ..contracts import *  # noqa
 
-def split(chunks: list[Chunk], cfg: dict) -> list[Chunk]:
-    """Re-chunk to cfg['index'] size/overlap. IMPLEMENT."""
-    raise NotImplementedError("Stage 4: chunk")
 
+def split(chunks: list[Chunk], cfg: dict) -> list[Chunk]:
+    """Re-chunk to cfg['index'] size/overlap: concatenate the (line-level) OCR chunks of each
+    document in reading order, then slide a window of chunk_tokens words with `overlap` words of
+    overlap. Each output chunk records every page its words came from."""
+    size = cfg["index"]["chunk_tokens"]
+    overlap = cfg["index"]["overlap"]
+    assert 0 <= overlap < size, "overlap must be smaller than chunk size"
+    step = size - overlap
+
+    by_doc: dict[str, list[tuple[str, str]]] = {}  # doc_id -> [(word, page_id)]
+    for c in chunks:  # input order = reading order, so dict insertion order is stable
+        for w in c.text.split():
+            by_doc.setdefault(c.doc_id, []).append((w, c.page_ids[0] if c.page_ids else ""))
+
+    out: list[Chunk] = []
+    for doc_id, words in by_doc.items():
+        n = 0
+        for start in range(0, len(words), step):
+            window = words[start : start + size]
+            pages = list(dict.fromkeys(p for _, p in window if p))
+            out.append(
+                Chunk(
+                    id=f"{doc_id}_c{n:04d}",
+                    doc_id=doc_id,
+                    text=" ".join(w for w, _ in window),
+                    page_ids=pages,
+                )
+            )
+            n += 1
+            if start + size >= len(words):
+                break
+    return out

@@ -1,0 +1,27 @@
+def snapshot(corpus_dir: str) -> str:
+    """Content-hash every file under corpus_dir (path + bytes) -> 12-char version id, and append
+    a record to data/versions.jsonl so results can be tied to the corpus that produced them."""
+    root = Path(corpus_dir)
+    h = hashlib.sha256()
+    n = 0
+    for f in sorted(root.rglob("*")):
+        if f.is_file() and f.name != ".gitkeep":
+            h.update(f.relative_to(root).as_posix().encode())
+            h.update(f.read_bytes())
+            n += 1
+    version = h.hexdigest()[:12]
+    ledger = Path("data/versions.jsonl")
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    known: set[str] = set()
+    if ledger.exists():
+        known = {json.loads(line)["version"] for line in ledger.read_text().splitlines() if line}
+    if version not in known:
+        with ledger.open("a") as fh:
+            rec = {
+                "version": version,
+                "dir": str(root),
+                "files": n,
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            fh.write(json.dumps(rec) + "\n")
+    return version

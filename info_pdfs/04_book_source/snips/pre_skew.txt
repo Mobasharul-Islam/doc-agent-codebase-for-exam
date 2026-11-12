@@ -1,0 +1,9 @@
+def estimate_skew(gray: np.ndarray) -> float:
+    """Skew angle in degrees from the min-area rectangle around ink pixels."""
+    _, ink = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    pts = cv2.findNonZero(ink)
+    if pts is None or len(pts) < 50:
+        return 0.0
+    angle = cv2.minAreaRect(pts)[-1]
+    angle = angle - 90 if angle > 45 else angle
+    return float(-angle if abs(angle) < 15 else 0.0)  # ignore implausible estimates

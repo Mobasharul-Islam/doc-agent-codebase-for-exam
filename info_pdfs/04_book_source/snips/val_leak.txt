@@ -1,0 +1,5 @@
+def assert_no_leakage(splits: dict[str, list[Page]]) -> None:
+    seen: dict[str, str] = {}
+    for name, ps in splits.items():
+        for p in ps:
+            assert seen.setdefault(p.doc_id, name) == name, f"doc {p.doc_id} leaks across splits"

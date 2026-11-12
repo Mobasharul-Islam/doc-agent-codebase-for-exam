@@ -1,0 +1,28 @@
+def synthesize(self, state: dict) -> Answer:
+    """Grounded, cited answer; abstain if unsupported (no-hallucination)."""
+    runs = [o.payload for o in state["obs"] if o.ok and "chunks" in o.payload]
+    if state.get("abstain") or not runs:
+        return postprocess.abstain_answer()
+    best = max(runs, key=lambda p: p["top_score"])
+    n_ctx = self.cfg.get("n_context", 4)
+    # evidence is untrusted document text: neutralise injection phrases, collapse whitespace
+    evid = [
+        (c["id"], guardrails.sanitize(c["text"])) for c in best["chunks"][:n_ctx]
+    ]
+    prompt = prompts.SYNTHESIZE.format(
+        evidence="\n".join(f"[{cid}] {txt}" for cid, txt in evid), question=state["query"]
+    )
+    raw = self.llm.complete(prompt)
+    texts = dict(evid)
+    cites = []
+    for cid in dict.fromkeys(re.findall(r"\[([^\]]+)\]", raw)):
+        if cid in texts:                             # drop hallucinated chunk ids
+            cites.append(Citation(chunk_id=cid, span=self._span(texts[cid], raw)))
+    ans = postprocess.format_answer(raw, cites)
+    if ans.grounded:
+        support = postprocess.support_score(ans.text, [texts[c.chunk_id] for c in ans.citations])
+        if support < postprocess.MIN_SUPPORT:        # cited, but the text isn't in the evidence
+            return postprocess.abstain_answer()
+        ans.confidence = round(0.5 * min(1.0, best["top_score"]) + 0.5 * support, 3)
+    ans.text = pii.redact(ans.text)
+    return ans

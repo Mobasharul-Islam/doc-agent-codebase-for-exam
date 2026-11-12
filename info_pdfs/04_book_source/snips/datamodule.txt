@@ -1,0 +1,57 @@
+"""Training -- Lightning datamodule"""
+from __future__ import annotations
+
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, Dataset
+
+from ..contracts import *  # noqa
+
+import lightning as L
+
+
+class _PatchSet(Dataset):
+    """(degraded, clean) pairs; degradation is re-drawn each epoch from a seeded generator."""
+    def __init__(self, patches: list[np.ndarray], seed: int) -> None:
+        self.p, self.seed, self.epoch = patches, seed, 0
+    def __len__(self) -> int:
+        return len(self.p)
+    def __getitem__(self, i: int):
+        from ..ingest.enhance import degrade
+
+        rng = np.random.default_rng((self.seed, self.epoch, i))
+        clean = self.p[i]
+        return torch.from_numpy(degrade(clean, rng))[None], torch.from_numpy(clean)[None]
+
+
+class DocDataModule(L.LightningDataModule):
+    """Pages -> split BY DOCUMENT (no leakage) -> clean patches for the enhancer."""
+    def __init__(self, cfg: dict | None = None) -> None:
+        super().__init__()
+        from .. import config
+        self.cfg = cfg or config.load()
+        self.train_ds: _PatchSet | None = None
+        self.val_ds: _PatchSet | None = None
+
+    def setup(self, stage: str | None = None) -> None:
+        from ..data import validate
+        from ..ingest import loader
+        from ..ingest.enhance import cut_patches
+
+        seed = self.cfg.get("seed", 42)
+        tc = self.cfg.get("train", {})
+        pages = loader.load_pages(self.cfg)
+        splits = validate.split_by_doc(pages, seed)
+        # tiny corpora may have no val doc: fall back to a val set drawn from train docs
+        val_pages = splits["val"] or splits["train"][:1]
+        mk = lambda ps, s: _PatchSet(  # noqa: E731
+            cut_patches(ps, tc.get("patch", 64), tc.get("patches_per_page", 32), s), seed)
+        self.train_ds, self.val_ds = mk(splits["train"], seed), mk(val_pages, seed + 1)
+
+    def train_dataloader(self) -> DataLoader:
+        assert self.train_ds is not None
+        return DataLoader(self.train_ds, batch_size=self.cfg.get("train", {}).get("batch_size", 16),
+                          shuffle=True, generator=torch.Generator().manual_seed(self.cfg.get("seed", 42)))
+    def val_dataloader(self) -> DataLoader:
+        assert self.val_ds is not None
+        return DataLoader(self.val_ds, batch_size=self.cfg.get("train", {}).get("batch_size", 16))

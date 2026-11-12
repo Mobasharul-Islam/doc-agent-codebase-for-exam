@@ -1,0 +1,77 @@
+\chapter{Cheat Sheet and Reference}
+\section{One-page summary}
+\begin{keyidea}
+\textbf{Build}: \c{load\_pages} $\to$ \c{preprocess} $\to$ \c{enhance} $\to$ \c{layout.detect} $\to$ \c{ocr.transcribe} $\to$ [\c{after\_ocr}: PII] $\to$ \c{chunk.split} $\to$ \c{embed.encode} $\to$ \c{store.build}.\\
+\textbf{Answer}: \c{Retriever} $\to$ \c{Agent.run}: loop(\c{on\_step}, \c{decide}, \c{on\_tool\_call}, \c{act}) $\to$ \c{before\_answer} $\to$ \c{synthesize} $\to$ \c{after\_answer}.\\
+\textbf{decide}: no obs $\to$ retrieve($k$); strong $\to$ stop; weak and $k'\le k_{\max}$ $\to$ retrieve(reworded,$k'$); weak and none $\to$ abstain.
+\end{keyidea}
+
+\section{Numbers to remember (current config)}
+\begin{center}\begin{tabular}{@{}ll@{\qquad}ll@{}}\toprule
+$k$ & 10 & \c{weak\_threshold} & 0.35 \\
+\c{k\_step} & 10 & \c{k\_max} & 40 \\
+\c{max\_steps} & 8 & \c{budget\_usd} & 0.05 \\
+\c{cost\_per\_call\_usd} & 0.001 & \c{n\_context} & 4 \\
+chunk / overlap & 48 / 8 & embedding dim & 384 \\
+support threshold & 0.3 & offline LLM threshold & 0.34 \\
+confidence & $0.5\,\text{top}+0.5\,\text{support}$ & seed & 42 \\
+\bottomrule\end{tabular}\end{center}
+
+\section{Function index by file}
+\begin{longtable}{@{}p{4.6cm}p{9.9cm}@{}}\toprule File & Key functions \\ \midrule \endhead
+\c{pipeline.py} & \c{build\_knowledge\_base(cfg)}, \c{answer(q,cfg)} \\
+\c{hooks.py} & \c{register}, \c{run}, \c{clear}, \c{SEAMS} \\
+\c{wiring.py} & \c{register\_all(cfg)} \\
+\c{logging\_conf.py} & \c{get\_logger}, \c{register} (tracing) \\
+\c{ingest/loader.py} & \c{data\_paths}, \c{load\_pages}, \c{\_doc\_id} \\
+\c{ingest/preprocess.py} & \c{read\_gray}, \c{write\_image}, \c{estimate\_skew}, \c{quality\_stats}, \c{run} \\
+\c{ingest/enhance.py} & \c{DenoiseNet}, \c{degrade}, \c{cut\_patches}, \c{Enhancer.train/apply/enhance\_image}, \c{run} \\
+\c{vision/layout.py} & \c{\_lines}, \c{detect}, \c{PAGE\_META} \\
+\c{vision/ocr.py} & \c{Reader.sidecar\_lines/transcribe\_region}, \c{transcribe} \\
+\c{index/chunk.py} & \c{split} \\
+\c{index/embed.py} & \c{get\_model}, \c{encode\_texts}, \c{encode} \\
+\c{index/store.py} & \c{build}, \c{load} \\
+\c{retrieval/retriever.py} & \c{Retriever.retrieve}, \c{top\_score}, \c{is\_weak}, \c{next\_k} \\
+\c{retrieval/rerank.py} & \c{rerank} \\
+\c{llm/client.py} & \c{LLM.complete}, \c{content\_words} \\
+\c{llm/prompts.py} & \c{DECIDE}, \c{SYNTHESIZE}, \c{JUDGE}, \c{ABSTAIN\_TOKEN} \\
+\c{llm/postprocess.py} & \c{format\_answer}, \c{support\_score}, \c{abstain\_answer}, \c{register} \\
+\c{agent/agent.py} & \c{Agent.run} (fixed), \c{decide}, \c{act}, \c{synthesize}, \c{\_reformulate}, \c{\_span} \\
+\c{agent/tools.py} & nine tools, \c{bind}, \c{REGISTRY} \\
+\c{agent/guardrails.py} & \c{Guardrails.check/reset}, \c{sanitize}, \c{looks\_like\_injection}, \c{register} \\
+\c{agent/memory.py} & \c{Memory.add/recall} \\
+\c{agent/hitl*.py} & \c{escalate}, \c{review\_queue}, \c{enqueue}, \c{pending}, \c{resolve}, \c{decision} \\
+\c{governance/pii.py} & \c{detect}, \c{redact}, \c{register} \\
+\c{data/validate.py, versioning.py} & \c{validate}, \c{split\_by\_doc}, \c{assert\_no\_leakage}, \c{check\_floors}, \c{snapshot} \\
+\c{eval/*.py} & \c{ocr\_f1}, \c{recall\_at\_k}, \c{groundedness}, \c{citation\_accuracy}, \c{ece}, \c{subgroup\_gap}, \c{temperature\_scale}, \c{judge}, \c{evaluate}, \c{run}, \c{audit}, \c{stress}, \c{explain} \\
+\c{rl/*.py} & \c{ToolSelectionEnv}, \c{PolicyNet}, \c{Policy.act}, \c{train}, \c{verifiable\_reward} \\
+\c{training/*.py} & \c{DocDataModule}, \c{LitComponent}, \c{main}, \c{apply\_lora}, \c{quantize} \\
+\c{mlops/*.py} & \c{init\_run}, \c{log}, \c{register}, \c{check\_drift} \\
+\c{serve/*.py} & \c{answer} (POST), \c{health}, \c{launch} \\
+\bottomrule\end{longtable}
+
+\section{Commands}
+\begin{lstlisting}[style=plain]
+python scripts/make_demo_corpus.py       # synthetic scans + .txt ground truth -> data/raw
+python scripts/run_index.py              # build the knowledge base (Stages 1-4)
+python scripts/run_eval.py --ablation    # metrics + ablations on grading_kit/tasks.jsonl
+uvicorn doc_agent.serve.api:app          # POST /answer?q=...    GET /health
+python -m pytest                         # 40 tests
+python -c "from doc_agent import config; from doc_agent.training import train; train.main('enhancer', config.load())"
+python -c "from doc_agent import config; from doc_agent.rl import train_rl; train_rl.train(config.load())"
+\end{lstlisting}
+
+\section{Glossary}
+\begin{description}
+ \item[Abstention] Answer ``insufficient evidence''; \c{grounded=False}, no citations, confidence 0.
+ \item[Ablation] Remove a component and measure the loss.
+ \item[Bi-encoder / cross-encoder] Encode separately (fast retrieval) / encode the pair jointly (accurate rerank).
+ \item[Calibration] Confidence matches accuracy; measured by ECE.
+ \item[Evidence-gated re-search] Branch on the best score: re-search if weak.
+ \item[Groundedness] Claims supported by cited evidence.
+ \item[Leakage] Test information present in training (same document in both splits).
+ \item[Seam] A named hook point; \textbf{handler} a function subscribed to it.
+ \item[SLO] Service-level objective, e.g.\ p95 latency $\le$ 300 ms.
+ \item[Sidecar] A \c{.txt} beside a scan holding ground-truth text.
+ \item[Verifiable reward] Reward from a deterministic exact-match check.
+\end{description}

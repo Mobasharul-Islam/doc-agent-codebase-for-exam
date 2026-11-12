@@ -1,0 +1,47 @@
+"""HITL -- persistent review queue (survives restarts)"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+import uuid
+from pathlib import Path
+
+from ..contracts import *  # noqa
+
+DB_PATH = Path("data/interim/hitl.db")
+
+
+def _conn() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(DB_PATH)
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS review (id TEXT PRIMARY KEY, ts REAL, item TEXT, "
+        "status TEXT, decision TEXT)"
+    )
+    return c
+
+def enqueue(item: dict) -> str:
+    """Persist a pending review item; return its id."""
+    item_id = uuid.uuid4().hex[:12]
+    with _conn() as c:
+        c.execute("INSERT INTO review VALUES (?,?,?,?,NULL)",
+                  (item_id, time.time(), json.dumps(item, default=str), "pending"))
+    return item_id
+def pending() -> list[dict]:
+    with _conn() as c:
+        rows = c.execute("SELECT id, ts, item FROM review WHERE status='pending' ORDER BY ts").fetchall()
+    return [{"id": i, "ts": t, **json.loads(item)} for i, t, item in rows]
+def resolve(item_id: str, decision: str) -> None:
+    """decision: 'approved' | 'rejected'."""
+    assert decision in {"approved", "rejected"}, "decision must be approved/rejected"
+    with _conn() as c:
+        n = c.execute("UPDATE review SET status='resolved', decision=? WHERE id=? AND status='pending'",
+                      (decision, item_id)).rowcount
+    if n == 0:
+        raise KeyError(f"no pending item {item_id}")
+def decision(item_id: str) -> str | None:
+    """None while still pending, else 'approved'/'rejected' (used to block actions until reviewed)."""
+    with _conn() as c:
+        row = c.execute("SELECT decision FROM review WHERE id=?", (item_id,)).fetchone()
+    return row[0] if row else None

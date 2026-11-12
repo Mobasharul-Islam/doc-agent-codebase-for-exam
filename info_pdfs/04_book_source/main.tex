@@ -1,0 +1,89 @@
+\documentclass[11pt,a4paper,oneside]{book}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=24mm,top=26mm,bottom=26mm]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable,array,tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[most]{tcolorbox}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black,citecolor=blue!50!black]{hyperref}
+\sloppy
+\setlist{itemsep=2pt,topsep=3pt}
+
+\definecolor{codebg}{HTML}{F6F8FA}
+\definecolor{kw}{HTML}{0B5394}
+\definecolor{cm}{HTML}{6A737D}
+\definecolor{st}{HTML}{22863A}
+
+\lstdefinestyle{py}{language=Python,basicstyle=\ttfamily\footnotesize,backgroundcolor=\color{codebg},
+ keywordstyle=\color{kw}\bfseries,commentstyle=\color{cm}\itshape,stringstyle=\color{st},
+ breaklines=true,breakatwhitespace=false,showstringspaces=false,columns=fullflexible,keepspaces=true,
+ frame=single,rulecolor=\color{black!15},xleftmargin=2pt,xrightmargin=2pt,aboveskip=6pt,belowskip=6pt,
+ numbers=left,numberstyle=\tiny\color{black!40},numbersep=5pt,tabsize=4}
+\lstdefinestyle{plain}{basicstyle=\ttfamily\footnotesize,backgroundcolor=\color{codebg},breaklines=true,
+ columns=fullflexible,keepspaces=true,frame=single,rulecolor=\color{black!15},aboveskip=6pt,belowskip=6pt,showstringspaces=false}
+\lstdefinelanguage{yamlx}{morecomment=[l]{\#},morestring=[b]"}
+\lstset{style=py}
+
+% code helpers -------------------------------------------------------------
+\newcommand{\snip}[1]{\lstinputlisting[style=py]{snips/#1.txt}}
+\newcommand{\snipy}[1]{\lstinputlisting[style=plain,language=yamlx]{snips/#1.txt}}
+\renewcommand{\c}[1]{\texttt{#1}}
+\renewcommand{\_}{\textunderscore\hspace{0pt}}
+\newcommand{\file}[1]{\texttt{#1}}
+
+% boxes --------------------------------------------------------------------
+\newtcolorbox{why}{breakable,colback=blue!4,colframe=blue!50!black,title=Why it exists,fonttitle=\bfseries\small,boxrule=0.6pt,arc=2pt}
+\newtcolorbox{gotcha}{breakable,colback=red!4,colframe=red!60!black,title=Gotcha,fonttitle=\bfseries\small,boxrule=0.6pt,arc=2pt}
+\newtcolorbox{tip}{breakable,colback=green!5,colframe=green!40!black,title=Exam tip,fonttitle=\bfseries\small,boxrule=0.6pt,arc=2pt}
+\newtcolorbox{keyidea}{breakable,colback=yellow!10,colframe=orange!70!black,title=Key idea,fonttitle=\bfseries\small,boxrule=0.6pt,arc=2pt}
+\newtcolorbox{tryit}{breakable,colback=teal!5,colframe=teal!50!black,title=Try it,fonttitle=\bfseries\small,boxrule=0.6pt,arc=2pt}
+\newcounter{prob}
+\newtcolorbox{problem}[1][]{breakable,colback=orange!5,colframe=orange!70!black,
+  title={Problem \refstepcounter{prob}\theprob\ #1},fonttitle=\bfseries\small,boxrule=0.6pt,arc=2pt,before skip=10pt}
+\newtcolorbox{solution}{breakable,colback=white,colframe=black!40,title=Solution,fonttitle=\bfseries\small,boxrule=0.4pt,arc=2pt,
+  fontupper=\small,after skip=10pt}
+
+% layout -------------------------------------------------------------------
+\titleformat{\chapter}[display]{\normalfont\huge\bfseries\color{blue!40!black}}{\chaptertitlename\ \thechapter}{8pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{-10pt}{22pt}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small\nouppercase{\leftmark}}\fancyhead[R]{\small doc-agent exam-prep book}
+\fancyfoot[C]{\thepage}
+\setlength{\headheight}{14pt}
+
+\title{\Huge\bfseries doc-agent\\[4pt]\Large The Complete Study Guide to the\\ Agentic-RAG Codebase}
+\author{Final-exam preparation resource}
+\date{}
+
+\begin{document}
+\frontmatter
+\maketitle
+\tableofcontents
+\mainmatter
+\input{ch00_intro}
+\input{ch01_overview}
+\input{ch02_repo}
+\input{ch03_contracts_config}
+\input{ch04_hooks}
+\input{ch05_ingest}
+\input{ch06_index}
+\input{ch07_retrieval}
+\input{ch08_agent}
+\input{ch09_crosscut}
+\input{ch10_eval}
+\input{ch11_rl_train_mlops}
+\input{ch12_serve_optional_tests}
+\input{ch13_design}
+\input{ch14_problems}
+\appendix
+\input{app_cheatsheet}
+\end{document}

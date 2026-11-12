@@ -1,0 +1,11 @@
+def check_floors(n_pages: int, n_words: int, task: dict) -> dict:
+    """Compare against corpus floors in configs/task.yaml. Returns a report (does not raise)."""
+    c = task.get("corpus", {})
+    mp, mw = c.get("min_pages", 0), c.get("min_words", 0)
+    return {
+        "pages": n_pages,
+        "words": n_words,
+        "min_pages": mp,
+        "min_words": mw,
+        "ok": n_pages >= mp and n_words >= mw,
+    }

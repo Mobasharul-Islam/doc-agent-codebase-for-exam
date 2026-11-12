@@ -1,8 +1,13 @@
 """End-to-end tiny run. Passes once students implement the stages."""
-import pytest
-from doc_agent import config, pipeline
+from doc_agent import pipeline
 
-@pytest.mark.skip(reason="enable after implementing stages")
-def test_answer_is_grounded_and_cited():
-    ans = pipeline.answer("sample question", config.load())
+
+def test_answer_is_grounded_and_cited(kb):
+    ans = pipeline.answer("On what date does the Bengali year 1431 begin?", kb)
     assert ans.grounded and len(ans.citations) >= 1
+    assert "fourteenth of April" in ans.text
+
+
+def test_unanswerable_abstains(kb):
+    ans = pipeline.answer("What is the population of the Mars colony?", kb)
+    assert not ans.grounded and ans.citations == []

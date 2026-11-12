@@ -1,0 +1,57 @@
+\chapter{Design Decisions, Trade-offs and Limitations}
+Written-answer questions usually ask \emph{why} and \emph{what are the trade-offs}. This chapter collects the reasoning in one place.
+
+\section{Design decisions and their justification}
+\begin{longtable}{@{}p{3.4cm}p{4.9cm}p{6.2cm}@{}}\toprule Decision & Alternative & Why this choice \\ \midrule \endhead
+Fixed pipeline order & free-form wiring & graders and CI need identical structure; stage order encodes data dependencies \\
+Hooks instead of inline code & call PII/guardrails in every stage & one owner per concern; features can be added/removed in one line; tests prove the wiring \\
+Contracts (Pydantic) & plain dicts & type errors surface at the boundary; \c{Chunk.score} lets the agent stay retriever-agnostic \\
+Dense retrieval + cosine & BM25 keyword search & matches meaning across wording; BM25 would miss paraphrases (but is better for rare exact tokens, so hybrids are common) \\
+Score $=$ cosine (not reranker logit) & use reranker score & stable, bounded scale so one threshold means the same thing \\
+Re-search by widening \emph{and} rewording & widen $k$ only & top score does not change with $k$ alone; the \emph{query} must change \\
+Abstain below threshold & always answer & wrong confident answers are worse than refusals in a document-QA setting \\
+Citations as (chunk, char span) & cite only documents/pages & verifiable, highlightable quotes; enables citation-accuracy metric \\
+PII redacted at index time & redact only at output & data that is never indexed cannot leak, even through logs or a prompt injection \\
+Offline extractive LLM fallback & require an API key & deterministic, free, testable end to end; real LLM is a one-line switch \\
+Classical layout, one-step denoiser & detectron2, diffusion & runnable on a laptop without model downloads; clearly marked substitution points \\
+Flat faiss index in config & HNSW & exact results; HNSW segfaults here; flat is fast enough at this scale \\
+Sidecar \c{.txt} OCR backend & TrOCR only & lets you study retrieval/agent without OCR noise; isolates error sources \\
+SQLite HITL store & in-memory list & review queue survives restarts \\
+\bottomrule\end{longtable}
+
+\section{Failure modes and their mitigations}
+\begin{longtable}{@{}p{3.6cm}p{4.2cm}p{6.7cm}@{}}\toprule Failure & Where it shows up & Mitigation in the code \\ \midrule \endhead
+OCR errors & wrong/missing words $\Rightarrow$ weak retrieval & enhancer/preprocess; weak evidence triggers re-search or abstention \\
+Hallucination & uncited or invented answer & citation requirement, support check, abstain token, groundedness metric \\
+Prompt injection & text in a page hijacks the LLM & \c{sanitize}, untrusted-passage prompt, argument check, support check \\
+PII leak & phone/email in answer or log & redact at \c{after\_ocr}, \c{before\_answer}, \c{on\_log} \\
+Runaway loop / cost & agent never stops & \c{max\_steps}, step and cost budgets, bounded \c{k} ladder \\
+Tool crash & exception in a tool & \c{act} converts to \c{ToolResult(ok=False)} \\
+Data leakage & inflated eval & split by document, \c{assert\_no\_leakage} \\
+Silent drift & scan quality changes over time & \c{monitor.check\_drift}, retrain trigger \\
+Stale index & answers from old corpus & corpus version hash, config snapshot \\
+\bottomrule\end{longtable}
+
+\section{Known limitations (be honest in exams)}
+\begin{enumerate}
+ \item \textbf{Layout} is classical morphology: single-column assumption; collapses under heavy noise; no tables/figures understanding beyond a size heuristic.
+ \item \textbf{Enhancer} is a one-step denoiser, not a multi-step diffusion model; trained only on synthetic degradations.
+ \item \textbf{Support check} is lexical (word overlap); a paraphrased correct answer could score low, and an answer reusing evidence words with the wrong meaning could pass. An entailment model would be stronger.
+ \item \textbf{Calibration}: confidence is a heuristic ($0.5$ score $+0.5$ support), not a fitted probability; abstentions inflate ECE.
+ \item \textbf{RL} is trained on a simulator and is not wired into \c{decide}.
+ \item \textbf{Memory} recall is lexical and unused by the baseline policy.
+ \item \textbf{Single hop}: the agent does retrieval then answer; true multi-hop (retrieve, extract, retrieve again) is not implemented, though \c{extract}/\c{aggregate}/\c{calculator} tools exist for it.
+ \item \textbf{Injection defence} is pattern-based.
+ \item \textbf{DP wrapper} gives no formal $(\varepsilon,\delta)$ guarantee.
+ \item \textbf{Demo corpus} is only 10 synthetic pages; the assignment needs 300+ real ones.
+\end{enumerate}
+
+\section{Likely essay questions (outline answers)}
+\begin{description}
+ \item[Why is this system ``agentic''?] The action taken depends on an observed value (top score vs threshold); path length varies ($1$ to $4$ retrievals); termination is by evidence or by exhausting $k_{\max}$; trace shows different paths for different inputs.
+ \item[Why abstain?] In regulated/document settings a confident wrong answer is costlier than ``I don't know''; abstention is measurable (abstain rate, groundedness) and the reward in the RL environment penalises hallucination at $-1$ versus $-0.3$ for needless abstention.
+ \item[Hooks vs inheritance/inline calls?] Hooks give one-line wiring, one owner per concern, easy removal for ablation, and a single manifest for audit; inline calls scatter policy and invite omissions.
+ \item[How would you scale to 100k pages?] \c{faiss:hnsw} or IVF-PQ; \c{stream\_ingest} batches; embedding batching; \c{cache}; asynchronous OCR workers; quantised models (\c{adapt.quantize}); keep re-chunking per document to parallelise.
+ \item[How would you reduce latency?] Skip the reranker when top score is very high; cache embeddings/answers; smaller chunks count; quantise the embedder; run layout/OCR only at ingest (already so).
+ \item[How do you know it works?] Verifiable tasks with exact-match checker; control/trigger pairs; ablations; groundedness and citation accuracy; calibration; fairness across quality buckets; robustness under corruption; tests for each cross-cutting feature.
+\end{description}

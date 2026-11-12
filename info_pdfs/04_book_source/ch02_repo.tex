@@ -1,0 +1,79 @@
+\chapter{Repository Layout and the Rules}
+\section{Directory map}
+\begin{lstlisting}[style=plain]
+doc-agent-starter/
+  configs/            config.yaml (ALL models+params), task.yaml (problem spec), design_choices.md
+  data/raw/           scanned page images (+ optional <page_id>.txt ground truth)
+  data/interim/       generated: preprocessed/, enhanced/, page_meta.json, hitl.db
+  data/index/         generated: index.faiss, chunks.jsonl
+  grading_kit/        tasks.jsonl (eval set), success_check.py (verifier), labels.jsonl, manifest.yaml
+  scripts/            run_ingest.py, run_index.py, run_eval.py, set_seed.py, make_demo_corpus.py
+  src/doc_agent/
+    contracts.py      data classes passed between stages            (FIXED)
+    config.py settings.py   config loader, secrets from .env        (FIXED)
+    pipeline.py       the stage order                               (FIXED)
+    hooks.py wiring.py  cross-cutting seams + manifest              (FIXED)
+    logging_conf.py   logger (FIXED) + tracing register() (IMPL)
+    ingest/ vision/ index/ retrieval/   Phase A and retrieval stages
+    agent/ llm/ governance/             Stage 6 and cross-cutting features
+    eval/ rl/ training/ mlops/ serve/ data/   supporting packages
+    optional/         profile-gated extras, OFF by default
+  tests/              pytest suite (the CI gates)
+  traces/run.jsonl    generated audit trail of every agent step
+\end{lstlisting}
+
+\section{The regulation (STRUCTURE.md)}
+The course repository is \emph{regulated}: you choose models and parameters, \textbf{not} where code lives.
+\begin{center}
+\begin{tabular}{@{}p{6.5cm}p{8cm}@{}}
+\toprule You MAY change & You MUST NOT change \\ \midrule
+\c{configs/*.yaml}: checkpoints, hyper-parameters, thresholds & directory layout, file names, module paths \\
+function \emph{bodies} marked \c{IMPLEMENT} & function/class \emph{signatures}, and \c{contracts.py} \\
+\c{grading\_kit/tasks.jsonl}, \c{success\_check.py} & stage order in \c{pipeline.py} \\
+ & tool names/signatures in \c{agent/tools.py} \\
+\bottomrule\end{tabular}
+\end{center}
+
+\begin{why}
+A fixed skeleton lets automatic graders import the same modules from every project, and lets CI detect drift. If you could rename \c{Retriever}, the grader could not run your system.
+\end{why}
+
+\section{CI gates}
+\begin{enumerate}
+ \item \textbf{Lint/format/types}: \c{ruff}, \c{black --check}, \c{mypy}.
+ \item \textbf{\c{test\_structure.py}}: required modules and callables exist.
+ \item \textbf{\c{test\_contracts.py}}: data contracts validate.
+ \item \textbf{\c{test\_tools.py}}: tools conform to the interface.
+ \item \textbf{\c{test\_smoke.py}}: end-to-end tiny run returns a \emph{grounded, cited} answer.
+ \item \textbf{Reproducibility}: a seeded re-run reproduces metrics.
+\end{enumerate}
+Here is the structure test; it shows exactly what is ``locked'':
+\snip{structure_test}
+\begin{tip}
+``Which of these changes would break CI?'' Renaming \c{Agent.run}'s parameter, removing a tool from \c{REGISTRY}, adding a tenth hook seam: all fail one of the tests above (see \c{test\_agent\_loop\_signature}, \c{test\_tool\_names\_locked}, \c{test\_seams\_are\_locked}). Changing \c{weak\_threshold} in the YAML is allowed.
+\end{tip}
+
+\section{Mandatory vs optional, vertical vs horizontal}
+\begin{itemize}
+ \item \textbf{Mandatory} homes (\c{src/doc\_agent/}) must be implemented by every group. \textbf{Optional} homes (\c{optional/}) are profile-gated, off by default, and not required by CI.
+ \item \textbf{Vertical} features own one module (a pipeline stage). \textbf{Horizontal} features (tracing, PII, security, grounding) cut across stages: their \emph{logic} lives in one owner module, their \emph{wiring} is one line per seam. Chapter~\ref{ch:hooks} is entirely about this.
+ \item Secrets live in \c{.env} (never committed) and are read only through \c{settings.py}. Logging goes through \c{logging\_conf.get\_logger} (no \c{print}). All LLM calls go through \c{llm/client.py}; all prompts live in \c{llm/prompts.py}.
+\end{itemize}
+
+\section{Module status table}
+\begin{center}\small
+\begin{tabular}{@{}p{5.2cm}p{2.1cm}p{7cm}@{}}
+\toprule Module & Status & One-line role \\ \midrule
+contracts, config, settings, pipeline, hooks, wiring & FIXED & structure and seams \\
+ingest/loader, preprocess, enhance & IMPL & Stage 1 \\
+vision/layout, ocr & IMPL & Stages 2--3 \\
+index/chunk, embed, store & IMPL & Stage 4 \\
+retrieval/retriever, rerank & IMPL (policy fns FIXED) & Stage 5 \\
+agent/agent & loop FIXED, 3 methods IMPL & Stage 6 \\
+agent/tools, guardrails, memory, hitl*, & IMPL & agent capabilities \\
+llm/client, prompts, postprocess & IMPL & model access, grounding \\
+governance/pii, logging\_conf.register & IMPL & privacy, tracing \\
+eval/*, rl/*, training/*, mlops/*, serve/* & IMPL & Stages 7--9, MLOps \\
+optional/* & IMPL, off by default & extras \\
+\bottomrule\end{tabular}
+\end{center}

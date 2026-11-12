@@ -1,0 +1,4 @@
+def run(pages: list[Page], cfg: dict) -> list[Page]:
+    if not cfg["enhance"]["enabled"]:
+        return pages
+    return Enhancer(cfg).apply(pages)

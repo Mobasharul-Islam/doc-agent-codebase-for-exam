@@ -1,0 +1,45 @@
+\chapter{Serving, Optional Modules and the Test Suite}
+\section{Serving (Stage 8)}
+\snip{api}
+\begin{itemize}
+ \item \c{POST /answer?q=...}: calls \c{pipeline.answer}, measures wall-clock latency, appends it to \c{reports/latency.jsonl} (read by the monitor), returns the \c{Answer} fields plus \c{latency\_ms}. If the index does not exist (\c{FileNotFoundError}) it returns \textbf{HTTP 503} (service not ready) rather than a 500 crash.
+ \item \c{GET /health}: liveness probe.
+ \item Run: \c{uvicorn doc\_agent.serve.api:app} (or \c{make serve}).
+\end{itemize}
+\snip{ui_launch}
+The Gradio UI wraps the same \c{pipeline.answer}; it lazily loads chunks to show, for each citation, the chunk id, its pages, and the \emph{cited sentence} (slice of \c{chunk.text} by the span).
+
+\section{The optional modules (OFF by default)}
+These are profile-gated; CI does not require them. Implement one only if your data speciality or NFR calls for it.
+\begin{center}\small\begin{tabular}{@{}p{3.6cm}p{11cm}@{}}\toprule Module & What it does \\ \midrule
+\c{api\_security} & \c{require\_auth(token)}: SHA-256 hashes configured tokens, compares in \emph{constant time} (\c{hmac.compare\_digest}); \c{rate\_limit(client)}: token bucket (refill $1$/s, burst $5$). \\
+\c{cache} & LRU in-memory (512 items) backed by an append-only JSONL file. \\
+\c{config\_snapshot} & Writes config + git commit + library versions + corpus version to JSON (reproducibility$+$). \\
+\c{dp} & \c{DPOptimizer}: clip the batch gradient norm, add Gaussian noise $\mathcal N(0,(\sigma C)^2)$. \emph{Not} true DP-SGD (that needs per-sample clipping and a privacy accountant such as Opacus). \\
+\c{query\_expansion} & Original query + keyword form + synonym variants. \\
+\c{retrain\_trigger} & If the monitor says retrain, call \c{train.main("enhancer")}. \\
+\c{stream\_ingest} & Generator yielding batches of \c{Page}s so huge corpora never sit in memory. \\
+\c{synthetic\_data} & Renders text-line images (PIL + noise) with known text for tiny-label OCR training. \\
+\bottomrule\end{tabular}\end{center}
+\snip{opt_auth}
+\begin{why}Optional modules sit in a \emph{separate directory} so that the mandatory structure stays identical across all projects, while data-specific needs (very large corpora $\to$ streaming; PII-sensitive $\to$ DP; low-latency $\to$ cache) have a designated, non-conflicting home.\end{why}
+
+\section{The test suite as documentation}
+Tests are the \emph{executable specification}. Read them to learn intended behaviour.
+\snip{conftest}
+\textbf{The \c{kb} fixture} builds a complete throw-away knowledge base once per test session: generates the demo corpus into a temp directory, \emph{redirects every path} via \c{cfg["data"]}, disables the reranker (offline/fast), monkey-patches \c{TRACE\_PATH} and the HITL database path, and runs the real \c{build\_knowledge\_base}. Every test that needs a corpus shares it.
+\snip{t_agent}
+\begin{center}\small\begin{tabular}{@{}p{3.1cm}p{11.4cm}@{}}\toprule File & Covers \\ \midrule
+\c{test\_structure} & required symbols, loop signature, locked tool names, locked seams \\
+\c{test\_contracts} & the \c{Answer}/\c{Citation} contract \\
+\c{test\_tools} & registry entries are \c{Tool} subclasses \\
+\c{test\_smoke} & grounded + cited answer; unanswerable abstains \\
+\c{test\_ingest} & 10 pages / 3 docs; preprocess+enhance outputs; \c{DenoiseNet} shape \\
+\c{test\_ocr} & layout finds $\ge3$ lines; transcription returns text chunks \\
+\c{test\_retrieval} & chunk windows and page ids; retrieval relevance and sorted scores; \c{is\_weak}/\c{next\_k} \\
+\c{test\_agent} & safe calculator; aggregate/extract/cite; widening $[10,20,30,40]$; memory recall; HITL round-trip \\
+\c{test\_data} & validation failures; split by document; floors; snapshot changes with content \\
+\c{test\_eval} & F1, recall, groundedness, ECE, temperature scaling, subgroup gap, RLVR, env contract \\
+\c{test\_crosscutting} & the six cross-cutting proofs of Chapter~\ref{ch:cross} \\
+\bottomrule\end{tabular}\end{center}
+\begin{tip}Run the suite with \c{python -m pytest}. 40 tests pass. When an exam says ``this test fails, find the bug'', read the \emph{assertion} first: it names the invariant that broke.\end{tip}

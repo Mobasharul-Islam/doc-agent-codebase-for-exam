@@ -1,0 +1,124 @@
+\chapter{Hooks and Wiring: the Cross-Cutting Design}\label{ch:hooks}
+This is the most conceptual chapter and a favourite exam topic. Read it before the agent chapter.
+
+\section{The problem hooks solve}
+Four requirements apply to \emph{the whole system}, not to one stage:
+\begin{center}\begin{tabular}{@{}ll@{}}\toprule Requirement & Must happen at \dots \\ \midrule
+Privacy (PII) & after OCR, before the answer, in logs \\
+Security (injection, budgets) & every tool call \\
+Auditability (tracing) & every step, every tool call, every answer \\
+Grounding (no hallucination) & just before the answer is written \\ \bottomrule\end{tabular}\end{center}
+If each stage called these directly, every stage file would contain privacy, security, logging, and grounding code (``tangling''), and changing one rule would mean editing ten files. The alternative used here is \textbf{hooks}: stages announce \emph{``I am at point X''}; features subscribe to the points they care about.
+
+\begin{keyidea}
+\textbf{Observer pattern.} The pipeline and agent are \emph{publishers} of nine named events (seams). Features are \emph{subscribers}. The pipeline never imports PII or guardrails; the features never edit the pipeline. The only link is \c{wiring.py}.
+\end{keyidea}
+
+\section{\c{hooks.py} line by line}
+\snip{hooks}
+\begin{itemize}
+ \item \c{SEAMS}: the \emph{complete} list of allowed events. \c{test\_seams\_are\_locked} fails if it changes. \c{register} asserts the seam name, so a typo (\c{"after\_ocr "}) fails loudly.
+ \item \c{\_handlers}: a \c{defaultdict(list)}: for each seam, a list of functions in \emph{registration order}.
+ \item \c{register(seam, handler)}: append. Called by each feature's own \c{register()}.
+ \item \c{run(seam, ctx)}: call each handler in order, passing the context dictionary. The line \c{ctx = h(ctx) or ctx} means: if a handler returns a dict, use it for the next handler; if it returns \c{None}, keep the old one. So handlers can either \emph{mutate in place} or \emph{return a new dict}.
+ \item \c{clear()}: forget all handlers.
+\end{itemize}
+
+\begin{gotcha}
+\textbf{Mutate in place!} The pipeline and agent \emph{ignore} the value returned by \c{hooks.run(...)}. For example the agent does
+\c{hooks.run(hooks.BEFORE\_ANSWER, \{"state": state\})} and then keeps using its own \c{state}. A handler that builds a \emph{new} \c{state} and returns it would silently have no effect. That is why \c{pii.\_scrub} edits \c{chunk.text} and \c{o.payload} directly, and why the grounding gate sets \c{state["abstain"] = True} on the existing dict.
+\end{gotcha}
+\begin{gotcha}
+Exceptions propagate. When \c{Guardrails.check} raises \c{PermissionError} inside the \c{ON\_TOOL\_CALL} hook, the exception leaves \c{hooks.run} and aborts \c{Agent.run}. That is intentional: a blocked action must stop the loop, not be skipped.
+\end{gotcha}
+
+\section{The nine seams}
+\begin{longtable}{@{}p{3cm}p{3.7cm}p{3.4cm}p{4.2cm}@{}}
+\toprule Seam & Fired from & ctx keys & Subscribers \\ \midrule \endhead
+\c{after\_ingest} & \c{pipeline.build\_knowledge\_base}, after enhance & \c{pages} & none by default (extension point) \\
+\c{after\_ocr} & pipeline, after OCR & \c{chunks} & PII scrub \\
+\c{before\_index} & pipeline, after chunking & \c{chunks} & none by default \\
+\c{after\_retrieve} & \c{Retrieve} tool, after search & \c{chunks, query} & none by default \\
+\c{on\_step} & \c{Agent.run}, top of each iteration & \c{state} & tracing; guardrail budget reset \\
+\c{on\_tool\_call} & \c{Agent.run}, before running a tool & \c{action} & tracing; guardrail check \\
+\c{before\_answer} & \c{Agent.run}, after the loop & \c{state} & PII scrub; grounding gate \\
+\c{after\_answer} & \c{Agent.run}, after synthesize & \c{answer} & tracing \\
+\c{on\_log} & the \emph{tracer}, per record & \c{record} & PII scrub \\
+\bottomrule\end{longtable}
+\begin{tip}
+Three seams (\c{after\_ingest}, \c{before\_index}, \c{after\_retrieve}) have \emph{no} subscribers in the default wiring. They exist as \emph{extension points}: e.g.\ add a de-duplication handler at \c{before\_index} with no change to the pipeline. \c{on\_log} is fired by the tracing handler itself, so that what is written to disk is also scrubbed.
+\end{tip}
+
+\section{\c{wiring.py}: the single manifest}
+\snip{wiring}
+\c{register\_all(cfg)} (i) clears everything, then (ii) calls each feature's \c{register}. \textbf{Order matters}, because handlers on the same seam run in registration order:
+\begin{center}\begin{tabular}{@{}lll@{}}\toprule Seam & Order of handlers & Why this order \\ \midrule
+\c{on\_step} & trace $\to$ guardrail reset & trace the step even if it is the first (reset is silent) \\
+\c{on\_tool\_call} & trace $\to$ guardrail check & the attempted call is logged \emph{before} the check can raise \\
+\c{before\_answer} & PII scrub $\to$ grounding & scrub evidence first, then decide whether evidence is strong \\
+\c{after\_answer} & trace & final record \\ \bottomrule\end{tabular}\end{center}
+\begin{why}
+\c{wiring.py} is called ``the single auditable manifest'': to answer \emph{``which features run in this system, and where?''} you read one 15-line file. If a feature is not listed there, it is not wired anywhere. Tests then prove each feature \emph{actually works end to end}, because a module that exists but is never wired protects nothing.
+\end{why}
+
+\section{Anatomy of one query through the seams}
+\begin{lstlisting}[style=plain]
+pipeline.answer(q)
+  wiring.register_all(cfg)                      # clear + 4 features register
+  Agent.run(q):
+    iteration 1
+      ON_STEP       -> trace(decide, obs empty) ; guardrails.reset()   (first step)
+      decide        -> {"tool":"retrieve", args:{query,k=10}}
+      ON_TOOL_CALL  -> trace(retrieve) ; guardrails.check()  (steps=1, cost=0.001)
+      act           -> Retrieve tool -> AFTER_RETRIEVE (no handlers)
+    iteration 2
+      ON_STEP       -> trace(decide, obs top_score=0.605,k=10,n=9)
+      decide        -> {"tool":"stop"}                         # strong evidence
+    BEFORE_ANSWER   -> pii._scrub(evidence) ; grounding gate (abstain? no)
+    synthesize      -> Answer
+    AFTER_ANSWER    -> trace(answer)
+\end{lstlisting}
+Each trace record also triggers \c{ON\_LOG} (PII scrub) before it is written. Compare this with a real trace in Chapter~\ref{ch:cross}.
+
+\section{How to add a new cross-cutting feature (worked recipe)}
+Suppose you must \textbf{record the wall-clock time of every query}. The \emph{wrong} way is to edit \c{Agent.run}. The right way:
+\begin{enumerate}
+ \item Pick seams: start at \c{on\_step} when \c{state["obs"]} is empty, stop at \c{after\_answer}.
+ \item Write the owner module with a \c{register(hooks)} function.
+ \item Add one line to \c{wiring.register\_all}.
+ \item Add a test.
+\end{enumerate}
+\begin{lstlisting}
+# src/doc_agent/mlops/timing.py   (a NEW feature module)
+import time
+from ..logging_conf import get_logger
+_t = {}
+def register(hooks):
+    log = get_logger("timing")
+    def _start(ctx):
+        if not ctx["state"]["obs"]:          # first step of a query
+            _t["t0"] = time.perf_counter()
+        return ctx
+    def _stop(ctx):
+        log.info("query took %.3fs", time.perf_counter() - _t["t0"])
+        return ctx
+    hooks.register(hooks.ON_STEP, _start)
+    hooks.register(hooks.AFTER_ANSWER, _stop)
+
+# wiring.py: add   timing.register(hooks)   inside register_all
+\end{lstlisting}
+\begin{gotcha}
+You are \emph{not} allowed to add a tenth seam (the seam list is locked) or remove \c{hooks.run} calls; you add handlers to existing seams.
+\end{gotcha}
+
+\section{Checkpoint questions}
+\begin{enumerate}
+ \item Why does \c{register\_all} call \c{hooks.clear()}? What would happen after 100 queries without it?
+ \item Name two handlers on \c{before\_answer} and state their order. What if they were swapped?
+ \item A handler returns a modified copy of \c{ctx["state"]}. Is the agent affected? Why?
+ \item Which seam does the tracer itself fire, and why?
+ \item Where would you add a handler that drops duplicate chunks before indexing?
+\end{enumerate}
+\begin{solution}
+(1) Without clearing, every call appends another set of handlers: after 100 queries each seam would run its handlers 101 times (duplicate trace lines, repeated redaction, budgets counted several times). (2) PII scrub, then the grounding gate. Swapped, the gate would judge unscrubbed text (harmless here since it only looks at scores) but in general scrubbing first is safer. (3) No: \c{hooks.run}'s return value is ignored; only in-place mutation is seen. (4) \c{on\_log}, so the record is PII-scrubbed before being written. (5) \c{before\_index}, mutating \c{ctx["chunks"]} in place (e.g.\ \c{ctx["chunks"][:] = deduped}).
+\end{solution}

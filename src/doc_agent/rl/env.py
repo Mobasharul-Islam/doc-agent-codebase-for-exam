@@ -1,13 +1,62 @@
 """Stage 7 — Gymnasium env for tool/retrieval selection"""
 from __future__ import annotations
+
+import numpy as np
+
 from ..contracts import *  # noqa
 
 import gymnasium as gym
+from gymnasium import spaces
+
+ANSWER, RESEARCH, ABSTAIN = 0, 1, 2
+ACTION_NAMES = ["answer", "research", "abstain"]
+
 
 class ToolSelectionEnv(gym.Env):
-    """State=agent context, Action=tool choice, Reward=task success under budget. IMPLEMENT."""
-    def reset(self, *, seed=None, options=None):
-        raise NotImplementedError("Stage 7: env.reset")
-    def step(self, action):
-        raise NotImplementedError("Stage 7: env.step")
+    """State=agent context, Action=tool choice, Reward=task success under budget.
+    A cheap SIMULATOR of the evidence-gated re-search decision (so a policy trains in seconds):
+      state  = [top_score, k / k_max, steps / max_steps]
+      action = 0 answer now | 1 re-search (wider k + reformulated query) | 2 abstain
+      each question is answerable (70%) with latent evidence quality q; the observed top_score is a
+      noisy under-estimate of q that improves with every re-search.
+      reward = +1 correct answer, -0.5 wrong answer, -1 answering an unanswerable question
+               (hallucination), +0.3 correct abstain / -0.3 needless abstain, -0.05 per re-search."""
+    metadata: dict = {}
 
+    def __init__(self, cfg: dict | None = None) -> None:
+        r = (cfg or {}).get("retrieve", {"k": 10, "k_step": 10, "k_max": 40})
+        self.k0, self.k_step, self.k_max = r["k"], r["k_step"], r["k_max"]
+        self.max_steps = (cfg or {}).get("agent", {}).get("max_steps", 8)
+        self.observation_space = spaces.Box(0.0, 1.0, shape=(3,), dtype=np.float32)
+        self.action_space = spaces.Discrete(3)
+
+    def _obs(self) -> np.ndarray:
+        return np.array([self.s, self.k / self.k_max, self.t / self.max_steps], dtype=np.float32)
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        rng = self.np_random
+        self.answerable = bool(rng.random() < 0.7)
+        self.q = float(rng.uniform(0.55, 0.95) if self.answerable else rng.uniform(0.05, 0.3))
+        self.s = float(np.clip(self.q * rng.uniform(0.4, 1.0), 0, 1))
+        self.k, self.t = self.k0, 0
+        return self._obs(), {"answerable": self.answerable}
+
+    def step(self, action):
+        rng = self.np_random
+        self.t += 1
+        reward, done = 0.0, False
+        if action == RESEARCH and self.k + self.k_step <= self.k_max and self.t < self.max_steps:
+            self.k += self.k_step
+            self.s = float(np.clip(self.s + (self.q - self.s) * rng.uniform(0.2, 0.6), 0, 1))
+            reward = -0.05
+        elif action == ANSWER:
+            done = True
+            if self.answerable:
+                reward = 1.0 if rng.random() < self.q else -0.5
+            else:
+                reward = -1.0
+        else:  # abstain (or forced: research impossible / out of steps)
+            done = True
+            reward = -0.3 if self.answerable else 0.3
+        return self._obs(), reward, done, False, {}

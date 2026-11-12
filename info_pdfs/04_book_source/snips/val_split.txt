@@ -1,0 +1,16 @@
+def split_by_doc(pages: list[Page], seed: int = 42, frac=(0.8, 0.1, 0.1)) -> dict[str, list[Page]]:
+    """Split by DOCUMENT (never by page) so no document leaks across train/val/test."""
+    docs = sorted({p.doc_id for p in pages})
+    random.Random(seed).shuffle(docs)
+    n = len(docs)
+    n_val = int(round(n * frac[1])) if n >= 3 else 0
+    n_test = int(round(n * frac[2])) if n >= 3 else 0
+    n_train = n - n_val - n_test
+    assign = {d: "train" for d in docs[:n_train]}
+    assign.update({d: "val" for d in docs[n_train : n_train + n_val]})
+    assign.update({d: "test" for d in docs[n_train + n_val :]})
+    out: dict[str, list[Page]] = {"train": [], "val": [], "test": []}
+    for p in pages:
+        out[assign[p.doc_id]].append(p)
+    assert_no_leakage(out)
+    return out

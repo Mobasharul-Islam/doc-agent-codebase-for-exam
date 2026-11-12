@@ -1,0 +1,19 @@
+class Retrieve(Tool):
+    name = "retrieve"
+    def __call__(self, query: str, k: int = 10) -> ToolResult:
+        """Dense retrieval. payload carries what decide() and traces/run.jsonl need: chunk_ids,
+        top_score, k, plus 'weak' (evidence below threshold) and the chunk records themselves."""
+        from ..retrieval import retriever as rt
+
+        r = _retriever()
+        chunks = r.retrieve(query, k)
+        chunks = hooks.run(hooks.AFTER_RETRIEVE, {"chunks": chunks, "query": query})["chunks"]
+        return ToolResult(ok=True, payload={
+            "chunk_ids": [c.id for c in chunks],
+            "top_score": rt.top_score(chunks),
+            "k": k,
+            "n": len(chunks),
+            "query": query,
+            "weak": rt.is_weak(chunks, {"retrieve": r.cfg}),
+            "chunks": [c.model_dump() for c in chunks],
+        })

@@ -1,0 +1,20 @@
+class DenoiseNet(nn.Module):
+    """Small residual conv encoder-decoder ('unet_small'). Trained as a one-step denoiser
+    (degraded -> clean), the single-step special case of a diffusion denoiser; a multi-step
+    diffusion sampler is out of scope for this study baseline."""
+
+    def __init__(self, ch: int = 16) -> None:
+        super().__init__()
+        self.enc1 = nn.Sequential(nn.Conv2d(1, ch, 3, padding=1), nn.ReLU())
+        self.enc2 = nn.Sequential(nn.Conv2d(ch, ch * 2, 3, stride=2, padding=1), nn.ReLU())
+        self.mid = nn.Sequential(nn.Conv2d(ch * 2, ch * 2, 3, padding=1), nn.ReLU())
+        self.up = nn.ConvTranspose2d(ch * 2, ch, 2, stride=2)
+        self.dec = nn.Sequential(
+            nn.Conv2d(ch * 2, ch, 3, padding=1), nn.ReLU(), nn.Conv2d(ch, 1, 3, padding=1)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        e1 = self.enc1(x)
+        m = self.mid(self.enc2(e1))
+        d = self.dec(torch.cat([self.up(m), e1], dim=1))
+        return torch.clamp(x + d, 0.0, 1.0)  # predict a residual correction

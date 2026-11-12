@@ -1,0 +1,64 @@
+\chapter{Data Contracts and Configuration}
+\section{Data contracts (\c{contracts.py}, FIXED)}
+A \emph{contract} is a typed record that one stage hands to the next. They are Pydantic models, so invalid data raises an error at the boundary instead of corrupting a later stage.
+\snip{contracts}
+
+\begin{longtable}{@{}p{2.3cm}p{5cm}p{7.2cm}@{}}
+\toprule Class & Fields & Role / who produces and consumes \\ \midrule \endhead
+\c{Page} & \c{id, image\_path, doc\_id} & One scanned image. Produced by \c{loader}; consumed by preprocess, enhance, layout. \c{doc\_id} groups pages of the same document (needed for leak-free splits). \\
+\c{Region} & \c{page\_id, bbox, kind} & A rectangle \c{(x0,y0,x1,y1)} on a page: \c{text|table|figure|heading}. Layout $\to$ OCR. \\
+\c{Chunk} & \c{id, doc\_id, text, page\_ids, score} & Unit of retrieval. \c{score} is set by retrieval, read by the agent's \c{decide()}. \c{page\_ids} is a \emph{list} because a window can span pages. \\
+\c{Query} & \c{text, verifiable, judged} & An eval question. \c{verifiable}: exact-match gradable (anchors RLVR). \c{judged}: scored by an LLM/human. \\
+\c{Citation} & \c{chunk\_id, span} & Points at \emph{where in which chunk} a claim comes from: \c{span=(start,end)} character offsets into \c{chunk.text}. \\
+\c{Answer} & \c{text, citations, grounded, confidence} & What the user sees. \\
+\c{ToolResult} & \c{ok, payload} & Uniform return type of every tool (payload is a free dict). \\
+\c{TraceStep} & \c{step, tool, args, obs} & One line in the audit trail \c{traces/run.jsonl}. \\
+\bottomrule\end{longtable}
+
+\begin{why}
+Contracts are the \emph{interfaces between teams and stages}. If OCR returned a plain string, layout information (which page, which region) would be lost and citations impossible. \c{Chunk.score} exists \emph{in the contract} so that the agent can branch on evidence strength without knowing how retrieval computed it.
+\end{why}
+\begin{gotcha}
+\c{from ..contracts import *} appears at the top of almost every module, so \c{Page}, \c{Chunk}, \c{Answer}, \dots{} are available without a named import. That is why you rarely see an explicit import of them.
+\end{gotcha}
+\begin{tip}
+An \c{Answer} is \emph{consistent} (see \c{groundedness} in Chapter~\ref{ch:eval}) only in two shapes: (\c{grounded=True} and at least one citation) \textbf{or} (\c{grounded=False} and no citations). Memorise this; several questions reduce to it.
+\end{tip}
+
+\section{Loading configuration (\c{config.py}, \c{settings.py}, FIXED)}
+\snip{config}
+\snip{settings}
+\c{config.load()} returns a plain \c{dict}. \c{settings} reads \c{LLM\_API\_KEY} and \c{WANDB\_API\_KEY} from the environment or \c{.env}. The rule is: \emph{secrets only via settings, tunable numbers only via the YAML}.
+
+\section{\c{configs/config.yaml}: every key and what it controls}
+\snipy{config_yaml}
+\begin{longtable}{@{}p{3.1cm}p{4.2cm}p{7.2cm}@{}}
+\toprule Key & Value now & Effect \\ \midrule \endhead
+\c{seed} & 42 & Seeds Python/NumPy/Torch (\c{scripts/set\_seed.py}); reproducibility gate. \\
+\c{enhance.enabled} & true & If false, \c{enhance.run} returns pages untouched. \\
+\c{layout.backend} & classical & OpenCV line segmentation. \\
+\c{ocr.backend} & auto & \c{auto}: use \c{<page\_id>.txt} sidecar if present else TrOCR; \c{trocr}: never sidecar. \\
+\c{embed.model} & MiniLM-L6-v2 & Sentence embedding model, 384-d. \\
+\c{index.type} & faiss:flat & Exact search. \c{faiss:hnsw} = approximate graph (crashes on this PC). \\
+\c{index.chunk\_tokens, overlap} & 48, 8 & Window size and overlap in \emph{words}. \\
+\c{retrieve.k} & 10 & First retrieval depth. \\
+\c{retrieve.k\_step, k\_max} & 10, 40 & How much to widen, and the ceiling. \\
+\c{retrieve.weak\_threshold} & 0.35 & Evidence below this cosine is ``weak''. \\
+\c{retrieve.rerank, reranker} & true, ms-marco MiniLM & Cross-encoder reorder. \\
+\c{agent.max\_steps} & 8 & Loop iteration cap; also the guardrail step budget. \\
+\c{agent.autonomy} & act-with-approval & \c{read-only} / \c{act-with-approval} / autonomous. \\
+\c{agent.budget\_usd, cost\_per\_call\_usd} & 0.05, 0.001 & Guardrail cost model: each tool call adds the unit cost. \\
+\c{agent.llm\_model, n\_context} & claude-haiku-5-5, 4 & Which LLM; how many chunks go into the prompt. \\
+\c{rl}, \c{adapt}, \c{train}, \c{data} & see Ch.\ref{ch:rl} & RL flag, LoRA/quant, denoiser hyper-params, directory paths. \\
+\bottomrule\end{longtable}
+
+\begin{why}
+``Code reads only from config'' means a student can run an \emph{experiment} (a different threshold, a different embedding model) by editing one YAML line, and the exact configuration is recorded for reproducibility. Hard-coded constants would make ablations impossible.
+\end{why}
+
+\section{Where files go: \c{data\_paths(cfg)}}
+\snip{loader_paths}
+Every directory (raw, interim, index, models, reports, trace) is resolved here with defaults, so a test can redirect the entire system to a temporary folder just by overriding \c{cfg["data"]}. This is exactly what \c{tests/conftest.py} does.
+
+\section{\c{task.yaml}}
+Describes the \emph{problem} (one per group): \c{domain}, \c{data\_speciality} (e.g. degraded scans), \c{primary\_nfr} (the non-functional requirement to optimise, e.g.\ \c{p95 latency <= 300ms}) and \c{nfr\_target}. \c{mlops/monitor.py} parses the latency target from here; \c{data/validate.check\_floors} reads the corpus-size floors.

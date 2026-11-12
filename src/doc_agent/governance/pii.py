@@ -1,19 +1,68 @@
 """Governance — PII detection + redaction (mandatory)"""
 from __future__ import annotations
+
+import re
+
 from ..contracts import *  # noqa
 
-def detect(text: str) -> list[tuple[int,int,str]]:
-    """Return (start,end,type) PII spans. IMPLEMENT."""
-    raise NotImplementedError("Governance: PII detect")
-def redact(text: str) -> str:
-    raise NotImplementedError("Governance: PII redact")
+_PATTERNS = {
+    "EMAIL": r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+",
+    # hyphenated (555-123-4567, +1 (555) 123-4567) or Bangladeshi mobile (+8801712345678, 01712-345678);
+    # deliberately NOT bare "1429 1430" so years/page numbers in almanacs are not mangled
+    "PHONE": r"(?<!\w)(?:\+?880[\s-]?1\d{3}[\s-]?\d{6}|01\d{3}[\s-]?\d{6}"
+             r"|(?:\+\d{1,3}[\s-]?)?(?:\(\d{2,4}\)[\s-]?|\d{2,4}-)\d{3,4}-\d{3,4})(?!\w)",
+    "SSN": r"\b\d{3}-\d{2}-\d{4}\b",
+    "CARD": r"\b(?:\d[ -]?){13,16}\b",
+    "ID": r"\b\d{10}(?:\d{3}|\d{7})?\b",   # national-ID-like long digit runs (10/13/17)
+}
+_ORDER = ["EMAIL", "SSN", "CARD", "ID", "PHONE"]  # earlier patterns win on overlaps
 
+def detect(text: str) -> list[tuple[int,int,str]]:
+    """Return non-overlapping (start,end,type) PII spans, sorted by position."""
+    spans: list[tuple[int, int, str]] = []
+    for kind in _ORDER:
+        for m in re.finditer(_PATTERNS[kind], text):
+            s, e = m.span()
+            if not any(s < e2 and s2 < e for s2, e2, _ in spans):
+                spans.append((s, e, kind))
+    return sorted(spans)
+def redact(text: str) -> str:
+    """Replace each PII span with [TYPE]."""
+    out, last = [], 0
+    for s, e, kind in detect(text):
+        out += [text[last:s], f"[{kind}]"]
+        last = e
+    out.append(text[last:])
+    return "".join(out)
+
+def _scrub_obj(obj):
+    """Recursively redact strings in dicts/lists; returns the cleaned object."""
+    if isinstance(obj, str):
+        return redact(obj)
+    if isinstance(obj, dict):
+        return {k: _scrub_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_obj(v) for v in obj]
+    return obj
 
 
 def register(hooks) -> None:
-    """Wire PII redaction into the pipeline. IMPLEMENT the handler (call redact())."""
+    """Wire PII redaction into the pipeline. The handler works IN PLACE on whatever the seam passes:
+    chunks (AFTER_OCR), agent state/evidence or answer (BEFORE_ANSWER), log records (ON_LOG)."""
     def _scrub(ctx: dict) -> dict:
-        raise NotImplementedError("PII: redact text/answer/log in ctx")
+        for c in ctx.get("chunks", []) or []:
+            if isinstance(c, Chunk):
+                c.text = redact(c.text)
+        state = ctx.get("state")
+        if state is not None:
+            for o in state.get("obs", []):
+                o.payload = _scrub_obj(o.payload)
+        if isinstance(ctx.get("answer"), Answer):
+            ctx["answer"].text = redact(ctx["answer"].text)
+        for key in ("record", "text"):
+            if key in ctx:
+                ctx[key] = _scrub_obj(ctx[key])
+        return ctx
     hooks.register(hooks.AFTER_OCR, _scrub)       # scrub extracted text before indexing
     hooks.register(hooks.BEFORE_ANSWER, _scrub)   # scrub the outgoing answer
     hooks.register(hooks.ON_LOG, _scrub)          # scrub logs

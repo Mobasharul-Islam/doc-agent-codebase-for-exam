@@ -1,0 +1,57 @@
+class LLM:
+    """Model set by cfg['agent'] (llm_model). Key from settings.llm_api_key (.env). Providers:
+    key starting 'sk-ant' -> Anthropic, any other key -> OpenAI-compatible, no key -> an OFFLINE
+    extractive fallback that quotes the best-matching evidence sentence (so the whole pipeline is
+    runnable and testable without network or cost)."""
+
+    def __init__(self, cfg: dict) -> None:
+        self.cfg = cfg.get("agent", cfg)  # accept the full config or just its 'agent' section
+        self.model = self.cfg.get("llm_model", "claude-haiku-5-5")
+        self.key = settings.llm_api_key
+        self.online = bool(self.key)
+
+    def complete(self, prompt: str, **kw) -> str:
+        if not self.online:
+            return self._offline(prompt)
+        max_tokens = kw.get("max_tokens", 300)
+        if self.key.startswith("sk-ant"):
+            import anthropic
+
+            msg = anthropic.Anthropic(api_key=self.key).messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
+        from openai import OpenAI
+
+        r = OpenAI(api_key=self.key).chat.completions.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            temperature=0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return (r.choices[0].message.content or "").strip()
+
+    # -- offline fallback ---------------------------------------------------------------------
+    def _offline(self, prompt: str) -> str:
+        m = re.search(r"<<<EVIDENCE\n(.*?)\nEVIDENCE>>>", prompt, re.S)
+        q = re.search(r"QUESTION: (.*?)(?:\nANSWER:|\Z)", prompt, re.S)
+        if not (m and q):  # DECIDE / JUDGE prompts: nothing sensible to do offline
+            return q.group(1).strip() if q else ""
+        qwords = set(content_words(q.group(1)))
+        best: tuple[float, str, str] = (0.0, "", "")
+        for line in m.group(1).splitlines():
+            lm = re.match(r"\[([^\]]+)\]\s*(.*)", line)
+            if not lm:
+                continue
+            cid, text = lm.groups()
+            for sent in re.split(r"(?<=[.!?])\s+", text):
+                words = set(content_words(sent))
+                score = len(qwords & words) / (len(qwords) or 1)
+                if score > best[0]:
+                    best = (score, sent.strip(), cid)
+        if best[0] < 0.34:
+            return ABSTAIN_TOKEN
+        return f"{best[1]} [{best[2]}]"

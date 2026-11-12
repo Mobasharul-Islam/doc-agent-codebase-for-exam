@@ -1,0 +1,10 @@
+def quality_stats(gray: np.ndarray, skew: float) -> dict:
+    """Scan-quality metadata (used by fairness audit, drift monitor, robustness)."""
+    blur = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    return {
+        "blur": blur,
+        "contrast": float(gray.std()),
+        "brightness": float(gray.mean()),
+        "skew_deg": skew,
+        "bucket": "poor" if blur < 100 else "medium" if blur < 1000 else "good",
+    }

@@ -1,0 +1,51 @@
+\chapter*{How to Use This Book}
+\addcontentsline{toc}{chapter}{How to Use This Book}
+\markboth{How to Use This Book}{How to Use This Book}
+This book is a complete, code-level explanation of the \emph{doc-agent} repository: an \textbf{agentic retrieval-augmented generation (RAG)} system that answers questions about \emph{scanned documents}. Every function that you will be asked about in the exam is shown here, \emph{verbatim from the source}, followed by an explanation of what it does, why it exists, and what could go wrong.
+
+\section*{What the exam will ask}
+The final exam is solved \emph{using the codebase}. Expect three kinds of questions:
+\begin{enumerate}
+ \item \textbf{Understanding}: ``What does the hook seam \c{before\_answer} do, and which modules attach to it?''
+ \item \textbf{Tracing / computing by hand}: ``Given this config and this retrieval score, how many retrieval steps does the agent take, and what is the answer?''
+ \item \textbf{Modifying / extending}: ``Add a new PII pattern'', ``Add a tool'', ``Change the policy so that \dots'', ``This test fails; find the bug.''
+\end{enumerate}
+Chapter~\ref{ch:problems} contains worked problems of all three kinds. Try them \emph{before} reading the solutions.
+
+\section*{Reading order}
+\begin{center}
+\begin{tabular}{@{}rll@{}}
+\toprule
+Chapter & Topic & Read it when \\
+\midrule
+1 & Big picture, vocabulary & first, always \\
+2 & Repo layout and the ``rules'' (what is FIXED) & first \\
+3 & Data contracts + configuration & before any stage \\
+4 & \textbf{Hooks and wiring} (the cross-cutting design) & before the agent chapter \\
+5--7 & Phase A: building the knowledge base & in order \\
+8 & Phase B: the agent (most examined) & carefully, twice \\
+9 & Cross-cutting features end to end & after 4 and 8 \\
+10--12 & Evaluation, RL, training, MLOps, serving, tests & reference \\
+13 & Design decisions, trade-offs, limits & for essay questions \\
+14 & Exam-style problems with solutions & last, and repeatedly \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section*{Conventions}
+\begin{itemize}
+ \item Code listings are extracted automatically from the repository, so they match the code exactly. Line numbers inside a listing are relative to that excerpt.
+ \item \texttt{FIXED} means the file or function was supplied and \emph{must not} change (the structure gate in CI checks this). \texttt{IMPL} means it was a stub that has been implemented.
+ \item Coloured boxes: \textbf{Why it exists} (design reason), \textbf{Gotcha} (common mistake / subtle behaviour), \textbf{Exam tip}, \textbf{Key idea}, \textbf{Try it} (experiment).
+\end{itemize}
+
+\begin{keyidea}
+If you only remember five things:
+\begin{enumerate}
+ \item The system has \textbf{two phases}: build the index once (Stages 1--4), answer questions many times (Stages 5--6).
+ \item The \textbf{agent} is a loop whose path depends on a number it observes: the best retrieval score (\emph{evidence-gated re-search}).
+ \item Safety, privacy, tracing and grounding are \textbf{not} inside the stages; they plug into fixed \textbf{hook seams}, registered in one place (\c{wiring.py}).
+ \item The system must \textbf{abstain} rather than hallucinate: no strong evidence means ``insufficient evidence''.
+ \item All models and numbers live in \textbf{\c{configs/config.yaml}}; code reads from it, never hard-codes.
+\end{enumerate}
+\end{keyidea}

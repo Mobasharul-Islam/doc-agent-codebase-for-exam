@@ -1,0 +1,19 @@
+def transcribe(regions: list[Region], cfg: dict) -> list[Chunk]:
+    """Regions -> one text Chunk per region (line-level; index.chunk.split merges into windows)."""
+    reader = Reader(cfg)
+    chunks: list[Chunk] = []
+    for page_id, grp in groupby(regions, key=lambda r: r.page_id):
+        rs = list(grp)
+        doc_id = PAGE_META[page_id][1]
+        lines = reader.sidecar_lines(page_id)
+        if lines is not None and len(lines) != len(rs):
+            # layout/sidecar line counts differ -> keep the page text intact as one chunk
+            chunks.append(
+                Chunk(id=f"{page_id}_r0", doc_id=doc_id, text=" ".join(lines), page_ids=[page_id])
+            )
+            continue
+        texts = lines if lines is not None else [reader.transcribe_region(r) for r in rs]
+        for i, t in enumerate(texts):
+            if t.strip():
+                chunks.append(Chunk(id=f"{page_id}_r{i}", doc_id=doc_id, text=t, page_ids=[page_id]))
+    return chunks

@@ -1,0 +1,34 @@
+"""MLOps -- experiment tracking (W&B)"""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+from ..contracts import *  # noqa
+from ..settings import settings
+
+_RUN = None
+_LOCAL = Path("reports/metrics.jsonl")
+
+
+def init_run(cfg: dict, tags: list[str]):
+    """Start a W&B run and log the config. Without WANDB_API_KEY, W&B is put in 'disabled' mode
+    (no network) and metrics are still appended to reports/metrics.jsonl so nothing is lost."""
+    global _RUN
+    import wandb
+
+    if settings.wandb_api_key:
+        wandb.login(key=settings.wandb_api_key)
+        mode = "online"
+    else:
+        mode = "disabled"
+    _RUN = wandb.init(project="doc-agent", config=cfg, tags=tags, mode=mode)
+    return _RUN
+
+def log(metrics: dict) -> None:
+    if _RUN is not None:
+        _RUN.log(metrics)
+    _LOCAL.parent.mkdir(parents=True, exist_ok=True)
+    with _LOCAL.open("a") as f:
+        f.write(json.dumps({"ts": time.time(), **metrics}) + "\n")

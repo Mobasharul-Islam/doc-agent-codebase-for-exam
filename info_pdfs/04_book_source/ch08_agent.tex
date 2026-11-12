@@ -1,0 +1,156 @@
+\chapter{Stage 6: The Agent}\label{ch:agent}
+This is the heart of the project and the most examined chapter.
+\section{What makes it an \emph{agent}?}
+A \textbf{pipeline} does fixed steps: retrieve, then answer. An \textbf{agent} chooses its next action based on what it \emph{observes}. Here the observation is the best retrieval score, and the branch is: \emph{good evidence $\Rightarrow$ answer; weak evidence $\Rightarrow$ search again (wider, reworded); still weak at the limit $\Rightarrow$ abstain}. The skeleton states this as the mandatory ``evidence-gated re-search'' behaviour, and a fixed retrieve$\to$answer path \emph{caps the grade}.
+
+\section{The fixed loop: \c{Agent.run}}
+\snip{agent_init}
+\snip{agent_run}
+Read the loop slowly:
+\begin{enumerate}
+ \item \c{state = \{"query": ..., "obs": []\}}: the agent's whole working state. \c{obs} accumulates one \c{ToolResult} per action.
+ \item \c{for \_ in range(max\_steps)}: a hard cap (8) prevents infinite loops.
+ \item \textbf{\c{ON\_STEP}} hook (trace; guardrail budget reset on the first step).
+ \item \c{action = self.decide(state)}: the \emph{policy}, a dictionary \c{\{"tool": name, "args": \{...\}\}}.
+ \item \c{"stop"}: leave the loop. (\c{"stop"} is a pseudo-tool; it is \emph{not} in the registry and never reaches the guardrails.)
+ \item \textbf{\c{ON\_TOOL\_CALL}} hook (guardrails raise here if the call is not allowed).
+ \item \c{result = self.act(action)}, append to \c{state["obs"]} and to \c{Memory}.
+ \item After the loop: \textbf{\c{BEFORE\_ANSWER}} hook (PII, grounding), \c{synthesize}, \textbf{\c{AFTER\_ANSWER}} hook.
+\end{enumerate}
+\begin{why}
+The skeleton marks \c{run()} FIXED and tells you \emph{not to inline} security, grounding, PII or tracing here. Those concerns live in hooks (Chapter~\ref{ch:hooks}). Only \c{decide}, \c{act} (dispatch) and \c{synthesize} are yours.
+\end{why}
+\begin{gotcha}
+If \c{decide} \emph{never} returns \c{stop}, the loop ends after \c{max\_steps} iterations and then synthesizes from whatever was observed. If \c{max\_steps} were smaller than the number of widening steps needed (e.g.\ 3 when four retrievals are required), the agent would be cut off \emph{before} reaching \c{k\_max}, and \c{state["abstain"]} would not have been set by \c{decide}; the grounding hook is then the safety net.
+\end{gotcha}
+
+\section{The policy: \c{decide}}
+\snip{agent_decide}
+\begin{figure}[h]\centering
+\begin{tikzpicture}[node distance=9mm and 18mm,
+ st/.style={draw,rounded corners,fill=blue!6,minimum width=3.4cm,minimum height=8mm,font=\small,align=center},
+ dc/.style={draw,diamond,aspect=2.2,fill=yellow!15,font=\footnotesize,align=center,inner sep=1pt},
+ >={Stealth}]
+\node[st] (r1) {retrieve($q$, $k=10$)};
+\node[dc,right=of r1] (w) {top\_score\\$<$ threshold?};
+\node[dc,right=of w] (k) {$k+\text{step}$\\$\le k_{\max}$?};
+\node[st,below=of w,fill=green!10] (ans) {stop $\to$ answer};
+\node[st,above=of k] (re) {retrieve(reworded $q$,\\ $k'=k+\text{step}$)};
+\node[st,below=of k,fill=red!10] (ab) {abstain\\(state[abstain]=True)};
+\draw[->] (r1)--(w);
+\draw[->] (w)--node[above,font=\scriptsize]{yes (weak)}(k);
+\draw[->] (w)--node[left,font=\scriptsize]{no (strong)}(ans);
+\draw[->] (k)--node[right,font=\scriptsize]{yes}(re);
+\draw[->] (k)--node[right,font=\scriptsize]{no}(ab);
+\draw[->,rounded corners] (re.west) -| ([xshift=-6mm]r1.north) -- (r1.north);
+\end{tikzpicture}
+\caption{The evidence-gated re-search state machine implemented by \c{decide()}.}
+\end{figure}
+\textbf{Cases}, in the order the code checks them:
+\begin{center}\begin{tabular}{@{}p{4.2cm}p{4.2cm}p{5.5cm}@{}}\toprule
+Condition & Returns & Side effect on \c{state} \\ \midrule
+no observations & \c{retrieve(query, k=cfg.k)} & none \\
+last result not weak & \c{\{"tool":"stop"\}} & sets \c{state["last\_obs"]} \\
+weak, \c{next\_k} $=$ number & \c{retrieve(reformulated, k2)} & sets \c{state["last\_obs"]} \\
+weak, \c{next\_k} $=$ \c{None} & \c{\{"tool":"stop"\}} & \c{state["abstain"]=True} \\
+\bottomrule\end{tabular}\end{center}
+Notes: (i) it reads \c{payload["weak"]}, a boolean the \c{Retrieve} tool computed using \c{is\_weak} with the \emph{same} config; (ii) \c{rcfg = \{"retrieve": self.retriever.cfg\}} rebuilds the shape that \c{next\_k} expects (it indexes \c{cfg["retrieve"]}); (iii) the decide trace line shows the \emph{original} query, while the following \c{retrieve} line shows the \emph{reformulated} one actually used.
+\snip{agent_reform}
+\textbf{Reformulation.} If an LLM is online, the \c{DECIDE} prompt asks it to rewrite the question as 3--8 keywords. Offline: drop stop-words with \c{content\_words}; if that gives the same string, keep the query. Example: \emph{``What is the population of the Mars colony?''} $\to$ \emph{``population mars colony''}.
+\begin{tip}
+\textbf{Hand-trace template.} Given $k=10$, step $10$, $k_{\max}=40$, threshold $0.35$ and best scores per retrieval $0.2,\,0.3,\,0.4$: step 1 retrieve($k{=}10$) $\to0.2$ weak $\Rightarrow$ widen; step 2 retrieve($k{=}20$) $\to0.3$ weak $\Rightarrow$ widen; step 3 retrieve($k{=}30$) $\to0.4$ strong $\Rightarrow$ \c{stop}. Three retrievals, then synthesize \emph{using the retrieval with the highest top score}.
+\end{tip}
+
+\section{Acting: \c{act} and the tool registry}
+\snip{agent_act}
+\c{act} finds the tool class by \c{name} in \c{tools.REGISTRY}, \emph{instantiates it with no arguments}, and calls it with \c{**args}. Unknown tool $\Rightarrow$ \c{ToolResult(ok=False)}. A tool that raises is caught and returned as \c{ok=False} with the error text; \emph{the loop must never crash because a tool failed}. (Guardrail \c{PermissionError}s are raised earlier, in the hook, and are \emph{not} caught here.)
+
+\snip{tools_registry}
+\snip{tools_ctx}
+Because tools are created with \c{tool\_cls()} (no arguments) they cannot receive the retriever through a constructor. The solution: module-level context \c{\_CTX} filled by \c{bind(retriever, cfg)} (called in \c{Agent.\_\_init\_\_}); tools read it via \c{\_retriever()}, which builds a default retriever lazily if nobody bound one.
+
+\subsection{The nine tools (names and signatures are LOCKED)}
+\begin{longtable}{@{}p{2.5cm}p{4cm}p{7.5cm}@{}}\toprule Name & Signature & Behaviour \\ \midrule \endhead
+\c{retrieve} & \c{(query, k=10)} & Dense search; fires \c{after\_retrieve}; payload: \c{chunk\_ids, top\_score, k, n, query, weak, chunks}. \\
+\c{rerank} & \c{(query, candidates)} & Candidates are ids or dicts; cross-encoder order; payload \c{chunk\_ids}. \\
+\c{read\_page} & \c{(page\_id)} & Joins all indexed chunks touching that page. \\
+\c{enhance\_page} & \c{(page\_id)} & Re-runs the enhancer on one page (writes a file: a \emph{side effect}). \\
+\c{extract} & \c{(field, chunk\_id)} & Regex value extraction. \\
+\c{aggregate} & \c{(op, items)} & \c{sum/count/min/max/mean} over numbers parsed from strings (\c{"1,250 taka"} $\to1250$). \\
+\c{cite} & \c{(chunk\_id, span)} & Validates the span against the chunk and returns the quoted text. \\
+\c{calculator} & \c{(expr)} & Safe arithmetic. \\
+\c{escalate\_to\_human} & \c{(reason, context)} & Queues a review item (HITL). \\
+\bottomrule\end{longtable}
+\snip{tools_retrieve}
+The \c{Retrieve} tool is the one that matters for the loop. The payload's \c{top\_score}, \c{k}, \c{n} feed \c{decide()} \emph{and} the trace (\c{obs}); \c{weak} spares \c{decide()} from recomputing; \c{chunks} carries full records so \c{synthesize} can build the prompt without touching the index again.
+\snip{tools_extract}
+\snip{tools_cite}
+\snip{tools_calc}
+\snip{tools_eval}
+\textbf{Why not \c{eval()}?} \c{eval} on user text executes arbitrary code (\c{\_\_import\_\_('os').system(...)}). \c{\_eval} walks the parsed AST and \emph{whitelists} only numeric constants, the operators $+,-,\times,/,//,\%,**$ and unary $\pm$; anything else raises \c{ValueError}. It also caps exponents at 100 so \c{9**9999} cannot freeze the machine. This is \emph{least privilege} in code (tested in \c{test\_calculator\_is\_safe}).
+
+\section{Memory (\c{agent/memory.py})}
+\snip{memory}
+Working memory: \c{add} appends every observation; \c{recall(query)} scores each item by the number of query words it contains, sorts by overlap (ties: most recent first) and returns the top 3 with a positive score. It is lexical, not semantic (no embeddings); in this baseline it records the trajectory and is available to a smarter policy.
+
+\section{Human-in-the-loop (\c{hitl.py}, \c{hitl\_store.py})}
+\snip{hitl}
+\snip{hitl_store}
+\c{escalate} enqueues \c{\{reason, context\}} in a \textbf{SQLite} database (\c{data/interim/hitl.db}, survives restarts) and returns \c{status:"pending", blocked:True}: \emph{the action is blocked, not skipped}; the caller may only proceed when \c{hitl\_store.decision(id)} returns \c{approved}. \c{pending()} feeds a reviewer UI; \c{resolve(id,decision)} accepts only \c{approved} or \c{rejected} and raises \c{KeyError} if the item is not pending (so one item cannot be resolved twice).
+
+\section{The LLM client and prompts}
+\snip{llm_client}
+\snip{llm_words}
+\textbf{All model calls go through \c{LLM.complete}.} Provider selection: key starting with \c{sk-ant} $\to$ Anthropic; any other key $\to$ OpenAI-compatible; \emph{no key} $\to$ \textbf{offline extractive fallback}: it parses the \c{<<<EVIDENCE ... EVIDENCE>>>} block and the \c{QUESTION:} line from the prompt, splits each evidence passage into sentences, scores each sentence by $\frac{|Q\cap S|}{|Q|}$ (content words), and returns the best sentence with its \c{[chunk\_id]}, or \c{INSUFFICIENT\_EVIDENCE} if the best score is below $0.34$. This makes the entire system deterministic, free and testable.
+\snip{prompts}
+The \c{SYNTHESIZE} prompt is the \emph{first line of defence} against hallucination and injection: it (i) states that passages are \emph{untrusted}, (ii) demands bracketed citations, (iii) defines the exact abstain token, (iv) asks for brevity. \begin{gotcha}The offline fallback \emph{depends} on the markers \c{<<<EVIDENCE}, \c{EVIDENCE>>>} and \c{QUESTION:}. If you edit the template and remove them, offline answers break.\end{gotcha}
+
+\section{Synthesis: from evidence to a cited answer}
+\snip{agent_synth}
+\snip{agent_span}
+Step by step:
+\begin{enumerate}
+ \item \c{runs}: all successful retrieve observations that carry \c{chunks}. If the abstain flag is set or there are none: return the abstention.
+ \item \c{best = max(runs, key=top\_score)}: use the \emph{strongest} retrieval, not necessarily the last.
+ \item Take the top \c{n\_context} (4) chunks, run each through \c{guardrails.sanitize} (mask injection phrases, length-preserving).
+ \item Build the prompt, call the LLM.
+ \item Extract \c{[id]} markers; keep only ids that are \emph{in the evidence} (this drops hallucinated citation ids); for each build a \c{Citation} whose \c{span} is the chunk sentence best overlapping the answer (\c{\_span}).
+ \item \c{format\_answer}: abstain if the model said so or there is no usable citation.
+ \item \textbf{Support check}: lexical support of the answer by the cited text must be $\ge0.3$, else abstain (cited but invented).
+ \item \textbf{Confidence} $=0.5\cdot\min(1,\text{top\_score})+0.5\cdot\text{support}$, rounded to 3 decimals.
+ \item Redact PII once more in the final text.
+\end{enumerate}
+\begin{keyidea}
+\textbf{Worked confidence.} Best score $0.605$, answer fully contained in the cited chunk (support $=1.0$): $0.5(0.605)+0.5(1.0)=0.8025\approx0.802$, exactly the value in the real trace. A weak-but-answered question would score lower; an abstention is always $0.0$.
+\end{keyidea}
+\begin{gotcha}
+\c{\_span} locates the best chunk \emph{sentence} using the \emph{sanitized} text offsets. Because \c{sanitize} is length-preserving the spans stay valid on the original chunk. If it were not (e.g.\ replacing a phrase with \texttt{[removed]}), citation spans would point to the wrong characters: this is the reason for masking with tilde characters of equal length.
+\end{gotcha}
+
+\section{Post-processing and the grounding gate (\c{llm/postprocess.py})}
+\snip{post}
+\c{support\_score} = fraction of the answer's content words found in the cited evidence. \c{format\_answer} turns the raw string and citations into an \c{Answer}: it strips \c{[id]} markers from the text, and returns an abstention if the abstain token is present, the text is empty, or there are no citations; otherwise \c{grounded=True} with a coarse default confidence (the agent then overwrites it with the evidence-based value). \c{register} attaches the \textbf{grounding gate} to \c{before\_answer}: if there are no retrievals, or \emph{all} retrievals are weak, it sets \c{state["abstain"]=True} in place.
+
+\section{A complete real trace}
+\begin{lstlisting}[style=plain]
+question: "What is the tidal range of the Karnaphuli estuary?"
+step 0 decide   obs={}                              # nothing observed yet
+step 0 retrieve args={query:..., k:10}              # ON_TOOL_CALL (guardrail: steps=1)
+step 1 decide   obs={top_score:0.605, k:10, n:9}    # 0.605 >= 0.35 -> strong
+step 1 answer   obs={grounded:True, confidence:0.802, n_citations:1}
+ANSWER  text="The Karnaphuli estuary has a tidal range of 4.2 metres during spring tides."
+        citations=[('tide_tables_c0000', (166, 212))]
+
+question: "What is the population of the Mars colony?"
+step 0 decide   obs={}
+step 0 retrieve k=10 query="What is the population of the Mars colony?"
+step 1 decide   obs={top_score:0.168, k:10}         # weak -> widen + reword
+step 1 retrieve k=20 query="population mars colony"
+step 2 decide   obs={top_score:0.12,  k:20}
+step 2 retrieve k=30 query="population mars colony"
+step 3 decide   obs={top_score:0.12,  k:30}
+step 3 retrieve k=40 query="population mars colony"
+step 4 decide   obs={top_score:0.12,  k:40}         # next_k(40) is None -> abstain
+step 4 answer   obs={grounded:False, confidence:0.0, n_citations:0}
+\end{lstlisting}
+Notice the pattern: each \c{decide} line shows what the \emph{previous} retrieve found; the \emph{sequence of} \c{k} \emph{values depends on observed scores}, which is exactly what ``agentic'' means for grading.

@@ -1,0 +1,54 @@
+\chapter{Stages 7--8 and MLOps: RL, Training, Adaptation, Operations}\label{ch:rl}
+\section{Reinforcement learning for tool selection (\c{rl/})}
+\subsection{Framing the problem as an MDP}
+The re-search decision is a sequential decision problem: \textbf{state} $s=[\text{top\_score},\,k/k_{\max},\,t/\text{max\_steps}]\in[0,1]^3$; \textbf{actions} $\{0{=}\text{answer},1{=}\text{re-search},2{=}\text{abstain}\}$; \textbf{reward} as below. The rule-based \c{decide} is one fixed policy; RL learns a policy from reward.
+\snip{env}
+\begin{longtable}{@{}p{5.2cm}p{9.3cm}@{}}\toprule Situation & Reward / transition \\ \midrule \endhead
+Re-search (and allowed) & $-0.05$; $k\mathrel{+}=\text{step}$; observed score moves toward the latent quality $q$: $s\leftarrow s+(q-s)\,u$, $u\sim U(0.2,0.6)$ \\
+Answer, question answerable & $+1$ with probability $q$, else $-0.5$ \\
+Answer, question \emph{not} answerable & $-1$ (a hallucination is the worst outcome) \\
+Abstain, not answerable & $+0.3$ \\
+Abstain, answerable & $-0.3$ \\
+Re-search impossible (at $k_{\max}$ or last step) & treated as abstain \\ \bottomrule\end{longtable}
+Each episode: 70\% of questions are answerable with $q\sim U(0.55,0.95)$ (else $q\sim U(0.05,0.3)$); the first observed score is $q\cdot U(0.4,1)$, a noisy under-estimate.
+\begin{why}It is a \textbf{simulator}, so a policy trains in seconds without running OCR or embeddings. The reward structure encodes the course's values: hallucinating costs more than abstaining unnecessarily.\end{why}
+\subsection{Policy network, PPO, RLVR}
+\snip{policy}
+\snip{train_rl}
+\snip{rlvr}
+\textbf{Network}: two $\tanh$ hidden layers (32 units) then two heads: action logits $\pi_\theta(a|s)$ and a value $V_\phi(s)$ (an \emph{actor-critic}).
+\textbf{Return}: for an episode with rewards $r_t$ and $\gamma=0.99$, $G_t=r_t+\gamma G_{t+1}$.\\
+\emph{Worked example:} rewards $[-0.05,-0.05,+1.0]$: $G_2=1.0$, $G_1=-0.05+0.99=0.94$, $G_0=-0.05+0.99(0.94)=0.8806$.
+\textbf{Advantage} $A_t=G_t-V(s_t)$, normalised to zero mean/unit variance.
+\textbf{PPO clipped objective}, with ratio $\rho_t=\dfrac{\pi_\theta(a_t|s_t)}{\pi_{\theta_{old}}(a_t|s_t)}$:
+\[ L^{\text{CLIP}}=\mathbb{E}\left[\min\bigl(\rho_tA_t,\ \operatorname{clip}(\rho_t,0.8,1.2)A_t\bigr)\right]\]
+The code minimises $-L^{\text{CLIP}}+0.5\,\text{MSE}(G,V)-0.01\,H[\pi]$ (policy loss + value loss $-$ entropy bonus) for 4 epochs per batch of 64 episodes.
+\begin{why}\textbf{Why clip?} Large policy updates destabilise learning; clipping the probability ratio keeps the new policy close to the one that collected the data. \textbf{Entropy bonus} keeps exploring.\end{why}
+\textbf{RLVR} (\c{rlvr.verifiable\_reward}): reward is $1$ iff the normalised prediction \emph{exactly} equals the normalised gold (and gold is non-empty), else $0$. Because the check is a deterministic string comparison, the policy cannot ``hack'' a learned judge with fluent text. \c{Policy.act(state)} returns \c{\{"tool":"retrieve"|"stop", "action":name\}}; without a trained checkpoint it falls back to the rule ``answer if score $\ge$ threshold else re-search''.
+\begin{gotcha}The config key \c{rl.train\_policy: false} means the \emph{agent} still uses the rule-based \c{decide}; RL training is a separate, explicit step (\c{train\_rl.train(cfg)}), and the trained policy is not yet wired into \c{decide}. Know this limitation.\end{gotcha}
+
+\section{Training the enhancer with Lightning (\c{training/})}
+\snip{datamodule}
+\snip{lit}
+\snip{train}
+\begin{itemize}
+ \item \textbf{\c{DocDataModule}} (a \c{LightningDataModule}): loads pages, \emph{splits by document} (\c{split\_by\_doc}), cuts clean patches, and wraps them in \c{\_PatchSet}, whose \c{\_\_getitem\_\_} degrades the patch with a generator seeded by \c{(seed, epoch, i)}, so every run sees the same noise (reproducible). If there is no val document, the first train page is borrowed.
+ \item \textbf{\c{LitComponent}} (a \c{LightningModule}): holds the \c{DenoiseNet}; \c{training\_step} returns the $L_1$ loss; \c{configure\_optimizers} returns Adam plus a cosine-annealing LR schedule. Only \c{component="enhancer"} is implemented; anything else raises \c{NotImplementedError} \emph{in the constructor}.
+ \item \textbf{\c{train.main}}: seeds everything (\c{seed\_everything}), chooses a W\&B logger if a key exists else a CSV logger, fits, saves \c{models/enhancer.pt}, and \emph{registers} the checkpoint with its metrics.
+\end{itemize}
+\section{Cheap adaptation (\c{training/adapt.py})}
+\snip{adapt}
+\textbf{LoRA (low-rank adaptation).} Freeze a weight $W\in\mathbb{R}^{d\times k}$ and learn $\Delta W=\frac{\alpha}{r}BA$ with $B\in\mathbb{R}^{d\times r}$, $A\in\mathbb{R}^{r\times k}$, $r\ll\min(d,k)$. Trainable parameters drop from $dk$ to $r(d+k)$.\\
+\emph{Example:} $d=k=768$, $r=8$: $589{,}824\to12{,}288$ parameters ($\approx2.1\%$). In the code, \c{apply\_lora} builds a \c{peft.LoraConfig} from \c{cfg["adapt"]["lora"]} ($r=8$, $\alpha=16$, dropout $0.05$, target modules \c{query}, \c{value}) and \c{get\_peft\_model}.\\
+\textbf{Quantization.} \c{quantize\_dynamic} converts \c{nn.Linear} weights to \c{qint8}: each weight becomes an 8-bit integer plus a scale ($w\approx s\cdot q$), roughly $4\times$ smaller and faster on CPU, at a small accuracy cost; activations are quantised on the fly (``dynamic'').
+
+\section{MLOps (\c{mlops/})}
+\snip{tracking}
+\snip{registry}
+\snip{monitor}
+\begin{description}
+ \item[Tracking] \c{init\_run} starts W\&B (\c{mode="disabled"} without an API key, so nothing is sent); \c{log(metrics)} writes to W\&B \emph{and} always appends to \c{reports/metrics.jsonl}.
+ \item[Registry] \c{register(component, path, metrics)} appends \c{\{version, sha256, metrics, ts\}} to \c{models/registry.json} and returns \c{component:vN}. The hash proves \emph{which bytes} a result came from.
+ \item[Monitor] \c{check\_drift}: \textbf{input drift} compares the mean of blur, contrast and brightness against a baseline frozen on the first run, with a z-score $z=\frac{|\bar x-\mu_{base}|}{\sigma_{base}/\sqrt{n}}$; flagged if any $z>3$. \textbf{Latency SLO}: p95 of \c{reports/latency.jsonl} against the target parsed from \c{task.yaml} (e.g.\ 300 ms). \c{retrain} advised if either trips; \c{optional/retrain\_trigger.maybe\_retrain} would act on it.
+\end{description}
+\begin{tip}Know the MLOps loop: \emph{track} experiments $\to$ \emph{register} versioned artefacts $\to$ \emph{monitor} drift and SLOs in production $\to$ \emph{trigger retraining}. Each arrow is a file in \c{mlops/} or \c{optional/}.\end{tip}

@@ -1,0 +1,12 @@
+def validate(pages: list[Page]) -> None:
+    """Structural checks (raise AssertionError): non-empty, unique ids, readable image files of a
+    supported format, every page has a doc_id. Corpus-size floors are checked separately by
+    check_floors() because they need the OCR word count."""
+    assert pages, "no pages found"
+    ids = [p.id for p in pages]
+    assert len(ids) == len(set(ids)), "duplicate page ids"
+    for p in pages:
+        path = Path(p.image_path)
+        assert path.suffix.lower() in VALID_EXTS, f"unsupported format: {path}"
+        assert path.exists() and path.stat().st_size > 0, f"missing/empty file: {path}"
+        assert p.doc_id, f"page {p.id} has no doc_id"

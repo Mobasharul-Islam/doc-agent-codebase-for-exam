@@ -1,5 +1,9 @@
-{"id":"t1","question":"","verifiable":true,"judged":false,"gold":"","gold_pages":[],"needs_research":false}
-# One line per eval item. Student-authored, grounded in YOUR corpus.
-# needs_research: true  = a TRIGGER item whose answer is NOT on the top chunk, so the agent MUST re-search.
-#                 false = a CONTROL item answerable from the top chunk (single pass).
-# REQUIRED: at least one {needs_research:true, needs_research:false} PAIR (the A3 agentic gate reads these).
+# Demo eval set for the synthetic corpus made by scripts/make_demo_corpus.py. Replace with items grounded in YOUR corpus.
+# needs_research: true = TRIGGER item (answer not on the top chunk -> agent must re-search); false = CONTROL.
+# gold == "" means unanswerable: the correct behaviour is to abstain.
+{"id":"t1","question":"On what date does the Bengali year 1431 begin?","verifiable":true,"judged":false,"gold":"fourteenth of April","gold_pages":["almanac_1431_p1"],"needs_research":false}
+{"id":"t2","question":"What time does the sun rise in the month of Boishakh?","verifiable":true,"judged":false,"gold":"5:42","gold_pages":["almanac_1431_p2"],"needs_research":false}
+{"id":"t3","question":"What is the tidal range of the Karnaphuli estuary?","verifiable":true,"judged":false,"gold":"4.2 metres","gold_pages":["tide_tables_p2"],"needs_research":false}
+{"id":"t4","question":"What was the average aman rice yield in Rajshahi?","verifiable":true,"judged":false,"gold":"3.4 tonnes per hectare","gold_pages":["harvest_ledger_p1"],"needs_research":false}
+{"id":"t5","question":"What is the population of the Mars colony?","verifiable":true,"judged":false,"gold":"","gold_pages":[],"needs_research":false}
+{"id":"t6","question":"How many tonnes was the harvest according to the notice to readers?","verifiable":true,"judged":false,"gold":"","gold_pages":[],"needs_research":false}

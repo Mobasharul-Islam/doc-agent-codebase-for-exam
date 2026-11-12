@@ -1,0 +1,19 @@
+def run(cfg: dict) -> dict:
+    """Toggle each stage off; report metric deltas vs the full system. Variants are query-time
+    knobs (no re-indexing): reranker off, evidence-gated re-search off (k_max=k), small k."""
+    tasks = load_tasks()
+    variants = {
+        "full": lambda c: None,
+        "no_rerank": lambda c: c["retrieve"].update(rerank=False),
+        "no_research": lambda c: c["retrieve"].update(k_max=c["retrieve"]["k"]),
+        "k3": lambda c: c["retrieve"].update(k=3, k_step=3, k_max=9),
+    }
+    results = {}
+    for name, mutate in variants.items():
+        c = copy.deepcopy(cfg)
+        mutate(c)
+        results[name] = evaluate(c, tasks)
+    base = results["full"]
+    for name, r in results.items():
+        r["delta_accuracy"] = r["accuracy"] - base["accuracy"]
+    return results

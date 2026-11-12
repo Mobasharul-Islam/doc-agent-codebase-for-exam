@@ -1,0 +1,12 @@
+def enhance_image(self, gray: np.ndarray) -> np.ndarray:
+    net = self._load()
+    if net is None:  # classical fallback
+        den = cv2.fastNlMeansDenoising(gray, None, h=10)
+        blur = cv2.GaussianBlur(den, (0, 0), 1.2)
+        return cv2.addWeighted(den, 1.5, blur, -0.5, 0)
+    h, w = gray.shape
+    ph, pw = (-h) % 4, (-w) % 4
+    x = np.pad(gray.astype(np.float32) / 255.0, ((0, ph), (0, pw)), mode="edge")
+    with torch.no_grad():
+        y = net(torch.from_numpy(x)[None, None].to(self.device))[0, 0].cpu().numpy()
+    return (y[:h, :w] * 255).round().astype(np.uint8)

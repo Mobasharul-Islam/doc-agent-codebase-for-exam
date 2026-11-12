@@ -1,0 +1,31 @@
+def train(self, pages: list[Page]) -> None:
+    torch.manual_seed(self.seed)
+    rng = np.random.default_rng(self.seed)
+    patches = cut_patches(
+        pages,
+        self.train_cfg.get("patch", 64),
+        self.train_cfg.get("patches_per_page", 32),
+        self.seed,
+    )
+    assert patches, "no pages large enough to cut training patches"
+    net = DenoiseNet().to(self.device)
+    opt = torch.optim.Adam(net.parameters(), lr=self.train_cfg.get("lr", 1e-3))
+    bs = self.train_cfg.get("batch_size", 16)
+    epochs = self.train_cfg.get("epochs", 3)
+    for ep in range(epochs):
+        order = rng.permutation(len(patches))
+        total = 0.0
+        for i in range(0, len(order), bs):
+            clean = np.stack([patches[j] for j in order[i : i + bs]])
+            noisy = np.stack([degrade(c, rng) for c in clean])
+            xt = torch.from_numpy(noisy)[:, None].to(self.device)
+            yt = torch.from_numpy(clean)[:, None].to(self.device)
+            loss = nn.functional.l1_loss(net(xt), yt)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            total += float(loss) * len(clean)
+        log.info("enhancer epoch %d/%d L1=%.4f", ep + 1, epochs, total / len(order))
+    self.ckpt.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(net.state_dict(), self.ckpt)
+    self._net = net.eval()

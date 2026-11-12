@@ -1,0 +1,36 @@
+def check_drift(cfg: dict) -> dict:
+    """Input drift + latency SLO.
+    Drift: mean scan quality (blur, contrast, brightness from page_meta.json) vs a baseline frozen the
+    first time this runs (reports/baseline_quality.json); flagged when any mean moves > 3 baseline
+    std-errors. Latency: p95 of reports/latency.jsonl vs the p95 target in configs/task.yaml.
+    'retrain' is advised when either trips."""
+    paths = data_paths(cfg)
+    out: dict = {"drift": False, "slo_breach": False, "retrain": False}
+    meta_f = paths["interim_dir"] / "page_meta.json"
+    if meta_f.exists():
+        meta = list(json.loads(meta_f.read_text()).values())
+        cur = {k: [m[k] for m in meta] for k in ("blur", "contrast", "brightness")}
+        base_f = paths["reports_dir"] / "baseline_quality.json"
+        if not base_f.exists():
+            base_f.parent.mkdir(parents=True, exist_ok=True)
+            base_f.write_text(json.dumps(cur))
+            out["baseline"] = "created"
+        else:
+            base = json.loads(base_f.read_text())
+            z = {}
+            for k, v in cur.items():
+                b = np.asarray(base[k])
+                se = max(float(b.std()), 1e-6) / np.sqrt(len(b))
+                z[k] = float(abs(np.mean(v) - b.mean()) / se)
+            out["drift_z"] = z
+            out["drift"] = any(s > 3 for s in z.values())
+    lat_f = paths["reports_dir"] / "latency.jsonl"
+    if lat_f.exists():
+        ms = [json.loads(line)["ms"] for line in lat_f.read_text().splitlines() if line.strip()]
+        if ms:
+            out["latency_p95_ms"] = float(np.percentile(ms, 95))
+            target = _p95_target_ms()
+            out["slo_target_ms"] = target
+            out["slo_breach"] = bool(target and out["latency_p95_ms"] > target)
+    out["retrain"] = out["drift"] or out["slo_breach"]
+    return out

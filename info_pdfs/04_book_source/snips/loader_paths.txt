@@ -1,0 +1,4 @@
+def data_paths(cfg: dict) -> dict[str, Path]:
+    """Resolve every filesystem location from cfg['data'] (defaults match configs/config.yaml)."""
+    merged = {**_DEFAULT_PATHS, **(cfg.get("data") or {})}
+    return {k: Path(v) for k, v in merged.items()}

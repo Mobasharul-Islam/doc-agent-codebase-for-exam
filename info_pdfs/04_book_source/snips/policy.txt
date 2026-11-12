@@ -1,0 +1,48 @@
+"""Stage 7 -- policy network"""
+from __future__ import annotations
+
+import numpy as np
+import torch
+from torch import nn
+
+from ..contracts import *  # noqa
+from ..ingest.loader import data_paths
+from .env import ACTION_NAMES, ANSWER, RESEARCH
+
+
+class PolicyNet(nn.Module):
+    """Actor-critic MLP: state(3) -> action logits(3) and value."""
+    def __init__(self, hidden: int = 32) -> None:
+        super().__init__()
+        self.body = nn.Sequential(nn.Linear(3, hidden), nn.Tanh(), nn.Linear(hidden, hidden), nn.Tanh())
+        self.pi = nn.Linear(hidden, 3)
+        self.v = nn.Linear(hidden, 1)
+    def forward(self, x: torch.Tensor):
+        h = self.body(x)
+        return self.pi(h), self.v(h).squeeze(-1)
+
+
+class Policy:
+    def __init__(self, cfg: dict) -> None:
+        self.full_cfg = cfg
+        self.cfg = cfg["rl"]
+        self.net = PolicyNet()
+        ckpt = data_paths(cfg)["models_dir"] / "policy.pt"
+        self.trained = ckpt.exists()
+        if self.trained:
+            self.net.load_state_dict(torch.load(ckpt, map_location="cpu"))
+        self.net.eval()
+
+    def act(self, state) -> dict:
+        """state: array [top_score, k_frac, step_frac] or dict with those keys. Returns
+        {'tool': 'stop'|'retrieve'} like Agent.decide(); the trained net picks the argmax action,
+        otherwise the rule-based threshold policy is used."""
+        if isinstance(state, dict):
+            state = [state["top_score"], state["k_frac"], state["step_frac"]]
+        s = np.asarray(state, dtype=np.float32)
+        if self.trained:
+            with torch.no_grad():
+                a = int(self.net(torch.from_numpy(s))[0].argmax())
+        else:
+            a = ANSWER if s[0] >= self.full_cfg["retrieve"]["weak_threshold"] else RESEARCH
+        return {"tool": "retrieve" if a == RESEARCH else "stop", "action": ACTION_NAMES[a]}

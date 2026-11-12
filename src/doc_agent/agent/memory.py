@@ -1,12 +1,29 @@
 """Stage 6 — working/episodic memory"""
 from __future__ import annotations
+
+import re
+
 from ..contracts import *  # noqa
+
+def _text(item) -> str:
+    """Searchable text of a memory item (ToolResult payloads, dicts, plain strings)."""
+    if isinstance(item, ToolResult):
+        item = item.payload
+    if isinstance(item, dict):
+        chunks = item.get("chunks")
+        if chunks:
+            return " ".join(c["text"] for c in chunks)
+        return " ".join(str(v) for v in item.values())
+    return str(item)
 
 class Memory:
     def __init__(self) -> None:
         self.items: list = []
     def add(self, item) -> None:
         self.items.append(item)
-    def recall(self, query: str) -> list:
-        raise NotImplementedError("Stage 6: memory recall")
-
+    def recall(self, query: str, top: int = 3) -> list:
+        """Items ranked by word overlap with the query (working-memory lookup, no embeddings)."""
+        q = set(re.findall(r"\w+", query.lower()))
+        scored = [(len(q & set(re.findall(r"\w+", _text(i).lower()))), n, i)
+                  for n, i in enumerate(self.items)]
+        return [i for s, _, i in sorted(scored, key=lambda t: (-t[0], -t[1])) if s > 0][:top]

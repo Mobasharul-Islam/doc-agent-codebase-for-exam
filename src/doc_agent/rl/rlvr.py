@@ -1,8 +1,17 @@
 """Stage 7 — RLVR — verifiable reward on extraction accuracy"""
 from __future__ import annotations
+
+import re
+
 from ..contracts import *  # noqa
 
-def verifiable_reward(prediction, gold) -> float:
-    """+1 if extraction exactly matches gold, else 0. Drives RLVR/GRPO. IMPLEMENT."""
-    raise NotImplementedError("Stage 7: verifiable reward")
 
+def _norm(x) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s.]", "", str(x).lower())).strip(" .")
+
+
+def verifiable_reward(prediction, gold) -> float:
+    """+1 if extraction exactly matches gold (after lower-casing / punctuation / whitespace
+    normalisation), else 0. No learned judge involved -> cannot be reward-hacked by fluent prose.
+    Drives RLVR/GRPO."""
+    return 1.0 if _norm(prediction) == _norm(gold) and _norm(gold) != "" else 0.0

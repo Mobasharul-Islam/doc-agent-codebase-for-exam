@@ -1,0 +1,27 @@
+"""OPTIONAL -- differential privacy (DP-SGD) for shared models
+Activate only if your data speciality or NFR requires it (e.g. a PII-sensitive corpus / private NFR). Off by default; CI does not require impl."""
+from __future__ import annotations
+
+import torch
+
+
+class DPOptimizer:
+    """Wraps an optimizer: clips the global gradient norm to `clip` and adds Gaussian noise
+    N(0, (sigma*clip)^2) before stepping. CAVEAT: real DP-SGD clips PER-SAMPLE gradients and tracks a
+    privacy budget (use Opacus for that); this wrapper clips the BATCH gradient, so it gives the
+    mechanics for study but no formal (epsilon, delta) guarantee."""
+    def __init__(self, opt: torch.optim.Optimizer, clip: float, sigma: float) -> None:
+        self.opt, self.clip, self.sigma = opt, clip, sigma
+    def step(self) -> None:
+        params = [p for g in self.opt.param_groups for p in g["params"] if p.grad is not None]
+        torch.nn.utils.clip_grad_norm_(params, self.clip)
+        for p in params:
+            p.grad += torch.randn_like(p.grad) * self.sigma * self.clip
+        self.opt.step()
+    def zero_grad(self) -> None:
+        self.opt.zero_grad()
+
+
+def make_private(optimizer, cfg: dict):
+    c = cfg.get("dp", {})
+    return DPOptimizer(optimizer, c.get("clip", 1.0), c.get("sigma", 0.5))

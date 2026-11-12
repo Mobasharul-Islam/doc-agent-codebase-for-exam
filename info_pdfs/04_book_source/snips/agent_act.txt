@@ -1,0 +1,9 @@
+def act(self, action: dict) -> ToolResult:
+    by_name = {t.name: t for t in tools.REGISTRY}
+    cls = by_name.get(action["tool"])
+    if cls is None:
+        return ToolResult(ok=False, payload={"error": f"unknown tool {action['tool']}"})
+    try:
+        return cls()(**action.get("args", {}))
+    except Exception as e:                           # a failing tool must not crash the loop
+        return ToolResult(ok=False, payload={"error": f"{type(e).__name__}: {e}"})

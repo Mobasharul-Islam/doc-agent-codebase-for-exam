@@ -1,0 +1,88 @@
+\chapter{The Big Picture}
+\section{The problem}
+A library holds thousands of \emph{scanned} pages (almanacs, ledgers, tide tables). The scans are noisy, skewed, and contain no machine-readable text. A user asks a natural-language question. The system must return an answer that is
+\begin{itemize}
+ \item \textbf{accurate} (the right fact),
+ \item \textbf{faithful / grounded} (supported by the documents, with citations),
+ \item \textbf{honest} (says ``insufficient evidence'' instead of guessing),
+ \item \textbf{safe} (resists instructions hidden in documents, leaks no personal data),
+ \item \textbf{auditable} (every decision is logged).
+\end{itemize}
+
+\section{Vocabulary you must know}
+\begin{longtable}{@{}p{3.2cm}p{11.3cm}@{}}
+\toprule \textbf{Term} & \textbf{Meaning in this codebase} \\ \midrule \endhead
+OCR / HTR & Optical / Handwritten Text Recognition: image of text $\to$ string. Baseline model: TrOCR. \\
+Layout detection & Finding \emph{where} the text is (lines, headings, figures) before reading it. \\
+Chunk & A piece of text (here a sliding window of words) that is embedded and retrieved. \\
+Embedding & A vector (384 numbers) such that similar meaning $\Rightarrow$ similar vectors. \\
+Dense retrieval & Find chunks whose embedding is closest to the question's embedding. \\
+Cosine similarity & $\cos(a,b)=\frac{a\cdot b}{\|a\|\|b\|}$. With unit vectors it equals the dot product. Used as the \emph{score}. \\
+Rerank & A slower, more accurate model (cross-encoder) reorders the top candidates. \\
+RAG & Retrieval-Augmented Generation: an LLM answers using retrieved text as evidence. \\
+Agent & A loop that \emph{observes}, \emph{decides} which action to take, \emph{acts}, and repeats. \\
+Agentic (here) & The decision depends on an observed number: re-search when evidence is weak. \\
+Grounded & Every claim is supported by a cited chunk. \\
+Abstain & Refuse to answer because evidence is insufficient. \\
+Hook / seam & A fixed named point where cross-cutting code runs. \\
+PII & Personally identifiable information (email, phone, ID numbers). \\
+Prompt injection & Text in a document that tries to give the model new instructions. \\
+HITL & Human-in-the-loop: a person reviews/approves an action. \\
+ECE & Expected Calibration Error: gap between confidence and accuracy. \\
+RLVR & Reinforcement learning with \emph{verifiable} rewards (exact-match check, no learned judge). \\
+\bottomrule
+\end{longtable}
+
+\section{Two phases}
+\begin{figure}[h]\centering
+\begin{tikzpicture}[node distance=5mm,
+ box/.style={draw,rounded corners,fill=blue!6,minimum width=4.3cm,minimum height=7mm,font=\small,align=center},
+ hk/.style={draw,rounded corners,fill=orange!15,minimum width=4.3cm,minimum height=6mm,font=\footnotesize\itshape,align=center},
+ >={Stealth}]
+\node[font=\bfseries] (ta) {PHASE A: build (once)};
+\node[box,below=of ta] (l) {Stage 1: load + preprocess + enhance};
+\node[box,below=of l] (lay) {Stage 2: layout detection};
+\node[box,below=of lay] (ocr) {Stage 3: OCR};
+\node[hk,below=of ocr] (h1) {hook: AFTER\_OCR (PII redaction)};
+\node[box,below=of h1] (ch) {Stage 4: chunk $\to$ embed $\to$ index};
+\node[box,below=of ch,fill=green!10] (idx) {data/index (faiss + chunks)};
+\draw[->] (ta)--(l); \draw[->] (l)--(lay); \draw[->] (lay)--(ocr); \draw[->] (ocr)--(h1); \draw[->] (h1)--(ch); \draw[->] (ch)--(idx);
+\node[font=\bfseries,right=3.2cm of ta] (tb) {PHASE B: answer (per question)};
+\node[box,below=of tb] (q) {question};
+\node[box,below=of q] (ret) {Stage 5: retrieve top-$k$ (score)};
+\node[box,below=of ret,fill=yellow!15] (ag) {Stage 6: agent loop\\decide / act / observe};
+\node[hk,below=of ag] (h2) {hook: BEFORE\_ANSWER (PII, grounding)};
+\node[box,below=of h2] (syn) {synthesize cited answer (LLM)};
+\node[box,below=of syn,fill=green!10] (ans) {Answer or ``insufficient evidence''};
+\draw[->] (tb)--(q); \draw[->] (q)--(ret); \draw[->] (ret)--(ag); \draw[->] (ag)--(h2); \draw[->] (h2)--(syn); \draw[->] (syn)--(ans);
+\draw[->,dashed] (idx.east) -- ++(1.1,0) |- (ret.west);
+\draw[->,bend left=35] (ag.east) to node[right,font=\scriptsize]{weak? widen $k$} (ret.east);
+\end{tikzpicture}
+\caption{Build phase (left) writes the index; answer phase (right) reads it.}
+\end{figure}
+
+The code for this whole picture is just twenty lines, \c{pipeline.py}. Read it now; everything else in the book elaborates it.
+\snip{pipeline}
+\begin{why}
+The stage order is \emph{fixed} on purpose: graders and CI rely on the same structure in every student project. \c{wiring.register\_all(cfg)} is called at the start of both functions so that the cross-cutting features are attached \emph{before} anything runs.
+\end{why}
+\begin{gotcha}
+\c{answer()} rebuilds a \c{Retriever} on every call, and \c{register\_all} calls \c{hooks.clear()} first. If it did not clear, handlers would pile up and run several times per query. There is a test for this (\c{test\_seams\_clear\_between\_queries}).
+\end{gotcha}
+
+\section{Data flow, with the types}
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule Stage & Input & Output \\ \midrule
+1 load\_pages & \c{cfg} & \c{list[Page]} \\
+1 preprocess / enhance & \c{list[Page]} & \c{list[Page]} (new image paths) \\
+2 layout.detect & \c{list[Page]} & \c{list[Region]} \\
+3 ocr.transcribe & \c{list[Region]} & \c{list[Chunk]} (one per line) \\
+4 chunk.split & \c{list[Chunk]} & \c{list[Chunk]} (windows) \\
+4 embed.encode & \c{list[Chunk]} & \c{ndarray (n, 384)} \\
+4 store.build & chunks, vectors & files on disk \\
+5 retrieve & question \c{str} & \c{list[Chunk]} with \c{score} \\
+6 agent.run & question \c{str} & \c{Answer} \\
+\bottomrule
+\end{tabular}
+\end{center}

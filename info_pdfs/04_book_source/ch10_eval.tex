@@ -1,0 +1,65 @@
+\chapter{Stage 9: Evaluation}\label{ch:eval}
+\section{Metrics (\c{eval/metrics.py})}
+\snip{metrics}
+\subsection{Definitions and worked numbers}
+\textbf{OCR token-F1.} Treat predicted and gold transcriptions as bags of words. With multiset intersection size $c$, $\text{prec}=c/|P|$, $\text{rec}=c/|G|$, $F_1=\frac{2\,\text{prec}\,\text{rec}}{\text{prec}+\text{rec}}$ (edge cases: either empty $\Rightarrow$ 1 if both empty else 0; $c=0\Rightarrow0$).
+\emph{Example:} pred ``the cat sat'', gold ``the cat sat down'': $c=3$, prec $=1$, rec $=0.75$, $F_1=0.857$ (verified).
+
+\textbf{Recall@k.} $\displaystyle \text{Recall@}k=\frac{|\text{retrieved}_{[:k]}\cap\text{gold}|}{|\text{gold}|}$ (1.0 if gold is empty).
+\emph{Example:} retrieved $[a,b,c,d]$, gold $\{b,d,z\}$, $k=3$: only $b$ is in the top 3: $1/3$.
+
+\textbf{Groundedness} (no-hallucination). Not a measure of truth: a \emph{consistency} check: $1$ if (\c{grounded} and has citations) or (not \c{grounded} and no citations), else $0$. So an honest abstention scores 1; an uncited claim scores 0.
+
+\textbf{Citation accuracy.} The fraction of citations that are well formed ($0\le s<e$, non-empty id) and, if the index loads, point to a real chunk with $e\le\text{len(chunk.text)}$. An abstention scores 1 (nothing wrong cited), a ``grounded'' answer with no citations scores 0.
+
+\textbf{Subgroup gap.} $\max_g\bar s_g-\min_g\bar s_g$ over per-group mean scores (0 = perfectly even). Fairness here means \emph{similar quality across scan-quality buckets}.
+
+\section{Calibration (\c{eval/calibration.py})}
+\snip{calib}
+A model is \textbf{calibrated} if, among answers given confidence $\approx p$, a fraction $\approx p$ are correct. \textbf{ECE} measures the gap, using 10 equal-width bins $B_b$ over confidence:
+\[ \mathrm{ECE}=\sum_{b=1}^{10}\frac{|B_b|}{N}\,\bigl|\operatorname{acc}(B_b)-\operatorname{conf}(B_b)\bigr| \]
+The code assigns bin $\min(\lfloor 10\cdot\text{conf}\rfloor,9)$ so confidence $1.0$ falls in the last bin.
+
+\begin{keyidea}\textbf{Worked example 1 (verified).} conf $=[0.9,0.8,0.7,0.6]$, correct $=[1,1,0,0]$. Four bins with one sample each: $|1-0.9|=0.1$, $|1-0.8|=0.2$, $|0-0.7|=0.7$, $|0-0.6|=0.6$. Each weighs $\frac14$: $\mathrm{ECE}=\frac{0.1+0.2+0.7+0.6}{4}=0.40$.\\
+\textbf{Worked example 2.} conf $=[0.95]\times4$, correct $=[1,1,1,0]$: one bin, acc $=0.75$, conf $=0.95$, ECE $=0.20$.\end{keyidea}
+
+\textbf{Temperature scaling.} Given logits $z$, calibrated probabilities are $p=\operatorname{softmax}(z/T)$. $T>1$ \emph{softens} an over-confident model; $T<1$ sharpens. $T$ is the single parameter that minimises the validation negative log-likelihood
+\[ \mathrm{NLL}(T)=-\frac1N\sum_i\log\operatorname{softmax}(z_i/T)_{y_i}. \]
+The code searches a log-grid ($0.1$ to $\approx20$, 60 points) then a fine grid ($\pm15\%$, 40 points). It does not change which class is predicted (argmax is invariant to $T$), only the confidence. The test constructs over-confident logits (right only $\approx60\%$ of the time) and asserts the fitted $T>1$.
+
+\begin{gotcha}
+\textbf{Real finding in this project:} ECE on the demo set is about $0.45$. Why? Correct \emph{abstentions} have confidence $0.0$, which counts as ``wrong'' for calibration (acc $=1$, conf $=0$: gap $1$). Discuss: should abstention confidence be defined differently, or should ECE be computed on answered questions only? Being able to explain this is exam material.
+\end{gotcha}
+
+\section{Verifying answers: \c{grading\_kit/success\_check.py}}
+\snip{succ}
+\begin{center}\begin{tabular}{@{}p{4.5cm}p{10cm}@{}}\toprule Task type & Passes when \\ \midrule
+\c{gold == ""} (unanswerable) & the answer is \emph{not grounded} (an abstention). Answering anything fails. \\
+verifiable (fact) & grounded, has citations, and the normalised gold string is a \emph{substring} of the normalised answer. \\
+judged (open) & grounded, cited, and \c{eval.judge.judge(...)} $\ge0.5$. \\
+\bottomrule\end{tabular}\end{center}
+\c{\_norm} lower-cases, replaces punctuation (except \c{.} and \c{:}) with spaces and collapses whitespace, so ``4.2 metres.'' matches gold ``4.2 metres''. \begin{why}A verifiable item is checkable \emph{without a learned judge}: that makes grading objective and lets the same check serve as an RL reward (RLVR).\end{why}
+
+\section{\c{tasks.jsonl}: the eval set}
+One JSON object per line: \c{id, question, verifiable, judged, gold, gold\_pages, needs\_research}. \c{needs\_research=true} marks a \textbf{trigger} item (the answer is \emph{not} on the top chunk, so the agent \emph{must} re-search); \c{false} marks a \textbf{control} (answerable in one pass). The A3 gate requires at least one trigger/control pair to \emph{demonstrate the agentic branch}.
+
+\section{Running the evaluation (\c{eval/ablation.py})}
+\snip{abl_eval}
+\snip{abl_run}
+\c{evaluate} runs each task through the full \c{pipeline.answer}, times it, calls \c{success\_check}, and aggregates \c{accuracy, groundedness, citation\_accuracy, abstain\_rate, ece, p95\_ms}. The p95 is the sorted latency at index $\min(n-1,\lfloor0.95n\rfloor)$.
+
+\textbf{Ablation} = switch one component off and measure the change (the standard way to show each part \emph{earns its place}):
+\begin{center}\begin{tabular}{@{}ll@{}}\toprule Variant & Config mutation \\ \midrule
+\c{full} & none (baseline) \\
+\c{no\_rerank} & \c{retrieve.rerank=False} \\
+\c{no\_research} & \c{k\_max=k}: \c{next\_k} is immediately \c{None}, so no widening \\
+\c{k3} & \c{k=3, k\_step=3, k\_max=9} \\ \bottomrule\end{tabular}\end{center}
+(Each variant uses a \emph{deep copy} of the config, never mutating the original.) \begin{gotcha}On the 6-question demo every variant scores 100\%: ablations on an \emph{easy} set show no differences. A meaningful ablation needs a set hard enough that components matter; this is itself a good discussion point.\end{gotcha}
+
+\section{Other analyses}
+\begin{description}
+ \item[\c{eval/judge.py}] \c{judge(query, answer)}: an LLM-as-judge for open-ended items. Returns 0 if not grounded/cited. With an LLM key: the \c{JUDGE} prompt, parsed as a float in $[0,1]$. Offline: heuristic $\min(1,0.5+0.5\cdot\text{overlap})\cdot\max(\text{confidence},0.5)$, which is a \emph{stand-in}, not a real judge.
+ \item[\c{eval/fairness.py}] \c{audit(cfg)}: groups pages by the quality bucket from \c{page\_meta.json}; for pages that have gold transcriptions in \c{labels.jsonl} (ignoring the \c{REPLACE ME} placeholder) runs layout+OCR and reports mean token-F1 per bucket plus \c{subgroup\_gap}. Without labels it reports only counts per bucket.
+ \item[\c{eval/robustness.py}] \c{stress(cfg)}: corrupts sample pages (noise, blur, low contrast, rotation) at severities 1--3 and reports \emph{layout line-count retention} (and OCR F1 vs the clean transcription when the backend is TrOCR). Real result: noise severity 2 retains only $\approx18\%$ of lines: classical layout is fragile.
+ \item[\c{eval/interpret.py}] \c{explain(answer, cfg)}: for each citation reports similarity between the answer and chunk (embedding dot product), the \emph{shared content terms}, the cited text, and the layout regions of its pages (``where the system looked''). Grad-CAM is \emph{not} implemented because there is no trainable vision classifier to attribute through.
+\end{description}

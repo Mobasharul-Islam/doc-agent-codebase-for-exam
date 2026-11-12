@@ -1,0 +1,9 @@
+class Cite(Tool):
+    name = "cite"
+    def __call__(self, chunk_id: str, span: tuple) -> ToolResult:
+        c = _chunk(chunk_id)
+        s, e = int(span[0]), int(span[1])
+        if c is None or not (0 <= s < e <= len(c.text)):
+            return ToolResult(ok=False, payload={"error": "invalid chunk or span"})
+        cite = Citation(chunk_id=chunk_id, span=(s, e))
+        return ToolResult(ok=True, payload={"citation": cite.model_dump(), "text": c.text[s:e]})

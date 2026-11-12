@@ -1,0 +1,50 @@
+\chapter{Stage 5: Retrieval and the Evidence-Strength Policy}
+\section{The retriever (\c{retrieval/retriever.py})}
+\snip{retriever}
+\begin{itemize}
+ \item \textbf{Lazy loading}: \c{\_ensure()} loads the index and chunk list on first use, then caches them in the object.
+ \item \textbf{\c{retrieve(query, k)}}: clamps $k$ to the number of chunks; embeds the query with the \emph{same} \c{embed.encode\_texts}; \c{index.search(q,k)} returns \emph{scores} and \emph{row ids}; for each hit (skipping $-1$ padding) the chunk is \emph{copied} with \c{model\_copy(update=\{"score": s\})} so the cached chunk objects are never mutated; finally \c{rerank.rerank} may reorder.
+ \item \textbf{Scores are cosine similarities, and stay so after reranking.}
+\end{itemize}
+\begin{why}
+\emph{Why copy instead of mutating?} The same cached \c{Chunk} objects serve every query; if one query wrote its score into the shared object, the next query would see stale scores. \emph{Why keep cosine as the score after rerank?} A cross-encoder emits unbounded logits (e.g.\ $-8$ to $+9$) which a fixed threshold cannot interpret; cosine has a stable meaning, so \c{weak\_threshold} stays calibrated. The reranker only improves \emph{order} (what the LLM sees first).
+\end{why}
+
+\section{Reranking (\c{retrieval/rerank.py})}
+\snip{rerank}
+A \textbf{bi-encoder} (the embedder) encodes query and chunk \emph{separately}: fast, scalable, a bit coarse. A \textbf{cross-encoder} reads the (query, chunk) pair \emph{together} and scores relevance: slower but more accurate, so it is only run on the top-$k$ candidates. The function returns the input unchanged if reranking is disabled, there are fewer than 2 candidates, or the model cannot load (offline): \emph{graceful degradation} rather than a crash.
+
+\section{The evidence-strength policy: the three provided functions}
+(These three functions are provided in the skeleton and are used by \c{decide()}.)
+\begin{lstlisting}
+def top_score(chunks):  return max((c.score for c in chunks), default=0.0)
+def is_weak(chunks, cfg): return top_score(chunks) < cfg["retrieve"]["weak_threshold"]
+def next_k(k, cfg):
+    nk = k + cfg["retrieve"]["k_step"]
+    return nk if nk <= cfg["retrieve"]["k_max"] else None
+\end{lstlisting}
+\begin{center}\begin{tabular}{@{}lll@{}}\toprule Function & Meaning & Edge case \\ \midrule
+\c{top\_score} & best chunk score & empty list $\to 0.0$ \\
+\c{is\_weak} & $\text{top}<\text{threshold}$ (strict) & score exactly $0.35$ is \emph{not} weak \\
+\c{next\_k} & $k+\text{step}$ if $\le k_{\max}$ else \c{None} & \c{None} = ``stop widening, abstain'' \\
+\bottomrule\end{tabular}\end{center}
+\begin{keyidea}
+With $k=10$, step $10$, $k_{\max}=40$ the widening sequence is $10\to20\to30\to40\to\texttt{None}$: \textbf{at most four retrievals} per question. Exam questions often vary these three numbers; the maximum number of retrievals is $\left\lfloor \frac{k_{\max}-k}{\text{step}}\right\rfloor+1$.
+\end{keyidea}
+\begin{gotcha}
+Widening $k$ alone rarely changes $\texttt{top\_score}$: the \emph{best} chunk for a fixed query is the same whether you ask for 10 or 40. Evidence only improves if the \emph{query} changes. That is why \c{decide()} also \textbf{reformulates} the query on every re-search (Chapter~\ref{ch:agent}). On the unanswerable ``Mars colony'' question the top score goes $0.168\to0.120\to0.120\to0.120$: reformulation did not help because there is nothing to find.
+\end{gotcha}
+
+\section{Real numbers (from running the demo corpus)}
+\begin{lstlisting}[style=plain]
+Q = "What is the tidal range of the Karnaphuli estuary?"
+  tide_tables_c0000  score=0.605
+  tide_tables_c0001  score=0.546
+  almanac_1431_c0002 score=0.203      <- unrelated document
+  tide_tables_c0002  score=0.273
+  almanac_1431_c0003 score=0.177
+Q = "What is the population of the Mars colony?"
+  harvest_ledger_c0000 0.157   almanac_1431_c0003 0.095   harvest_ledger_c0001 0.168
+weak_threshold = 0.35: relevant ~0.5-0.6, irrelevant ~0.1-0.27.
+\end{lstlisting}
+The gap between $\approx0.5$ and $\approx0.2$ is the signal everything downstream relies on; choosing the threshold (0.35) means picking a point inside that gap. Too low and nonsense is answered (hallucination risk); too high and good answers are refused (low recall).
